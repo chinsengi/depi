@@ -1,7 +1,9 @@
 <h3 align="center">
     <p>DePi: Pi0 training with large decentralized-collected so100 dataset</p>
 </h3>
+
 [![deploy](https://img.shields.io/badge/Hugging%20Face-DePi0-FFEB3B)](https://huggingface.co/sengi/DePi0)
+
 
 ---
 
