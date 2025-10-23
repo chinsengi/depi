@@ -1,6 +1,7 @@
 <h3 align="center">
     <p>DePi: Pi0 training with large decentralized-collected so100 dataset</p>
 </h3>
+[![deploy](https://img.shields.io/badge/Hugging%20Face-DePi0-FFEB3B)](https://huggingface.co/sengi/DePi0)
 
 ---
 
@@ -190,7 +191,7 @@ accelerate launch --num_processes=${n_gpus} lerobot/scripts/accelerate_train.py 
 
 Let's explain the command:
 1. We provided 3 ways to specify the datasets to train on:
-    - `--num_datasets=$N` to train on first $N decentralized-collected so100 datasets with huggingface ids from the list in [`data_ids/dataset_list_valid.json`](./data_ids/dataset_list_valid.json).
+    - `--num_datasets=$N` to train on first N decentralized-collected so100 datasets with huggingface ids from the list in [`data_ids/dataset_list_valid.json`](./data_ids/dataset_list_valid.json).
     - `--dataset.repo_ids=custome_data_id.json` to train on the dataset ids specified in the `custome_data_id.json` file.
     - `--dataset.repo_id=${HF_USER}/so101_test` to train on the dataset with single huggingface repo id.
 2. We provided 2 ways to specify the policy to train on:
@@ -238,7 +239,7 @@ python lerobot/scripts/control_robot.py \
   --robot.type=so101 \
   --control.type=record \
   --control.fps=30 \
-  --control.single_task="Grasp a lego block and put it in the bin." \
+  --control.single_task="Pick up the marker." \
   --control.repo_id=${HF_USER}/eval_pi0_so101_test \
   --control.tags='["tutorial"]' \
   --control.warmup_time_s=5 \
@@ -246,7 +247,7 @@ python lerobot/scripts/control_robot.py \
   --control.reset_time_s=30 \
   --control.num_episodes=10 \
   --control.push_to_hub=true \
-  --control.policy.path=outputs/train/pi0_so101_test/checkpoints/last/pretrained_model
+  --control.policy.path=sengi/DePi0
 ```
 
 As you can see, it's almost the same command as previously used to record your training dataset. Two things changed:
