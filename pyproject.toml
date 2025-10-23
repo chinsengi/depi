@@ -32,7 +32,7 @@ dependencies = [
     "einops>=0.8.0",
     "flask>=3.0.3",
     "gdown>=5.1.0",
-    "gymnasium==0.29.1",                                                 # TODO(rcadene, aliberts): Make gym 1.0.0 work
+    "gymnasium==0.29.1", # TODO(rcadene, aliberts): Make gym 1.0.0 work
     "h5py>=3.10.0",
     "huggingface-hub[hf-transfer,cli]==0.34.4 ; python_version < '4.0'",
     "imageio[ffmpeg]>=2.34.0",
@@ -57,6 +57,7 @@ dependencies = [
     "transformers>=4.48.0,<4.52.0",
     "torchdata>=0.11.0",
     "safetensors==0.6.2",
+    "pre-commit>=4.3.0",
 ]
 
 [project.optional-dependencies]
@@ -110,5 +111,5 @@ default.extend-ignore-identifiers-re = [
 
 [tool.setuptools.packages.find]
 include = ["lerobot*", "data_ids*"]
-exclude = ["media*", "outputs*", "slurm_out*", "slurm_scripts*", 
+exclude = ["media*", "outputs*", "slurm_out*", "slurm_scripts*",
            "so100_data*"]

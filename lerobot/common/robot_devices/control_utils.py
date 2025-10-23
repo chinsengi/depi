@@ -109,6 +109,10 @@ def predict_action(observation, policy, device, use_amp):
     ):
         # Convert to pytorch format: channel first and float32 in [0,1] with batch dimension
         for name in observation:
+            # Skip all observations that are not tensors (e.g. text)
+            if not isinstance(observation[name], torch.Tensor):
+                continue
+
             if "image" in name:
                 observation[name] = observation[name].type(torch.float32) / 255
                 observation[name] = observation[name].permute(2, 0, 1).contiguous()
@@ -256,6 +260,8 @@ def control_loop(
         else:
             observation = robot.capture_observation()
             action = None
+            observation["task"] = [single_task]
+            observation["robot_type"] = [policy.robot_type] if hasattr(policy, "robot_type") else [""]
 
             if policy is not None:
                 pred_action = predict_action(
@@ -267,9 +273,11 @@ def control_loop(
                 # Action can eventually be clipped using `max_relative_target`,
                 # so action actually sent is saved in the dataset.
                 action = robot.send_action(pred_action)
+                print(f"action: {action}")
                 action = {"action": action}
 
         if dataset is not None:
+            observation = {k: v for k, v in observation.items() if k not in ["task", "robot_type"]}
             frame = {**observation, **action, "task": single_task}
             dataset.add_frame(frame)
 
