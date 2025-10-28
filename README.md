@@ -1,17 +1,26 @@
-<h3 align="center">
-    <p>DePi: Pi0 training with large decentralized-collected so100 dataset</p>
-</h3>
+<div align="center">
+
+### DePi: $\pi$-series model training with large Decentralized-collected so100 dataset
+
+</div>
+
 
 [![deploy](https://img.shields.io/badge/Hugging%20Face-DePi0-FFEB3B)](https://huggingface.co/sengi/DePi0)
 
 
 ---
+This repository (DePi) focuses on the PyTorch training of $\pi$-series policies using large, decentrally collected SO100/SO101 datasets. It is built upon 🤗 [LeRobot](https://github.com/huggingface/lerobot). To maintain a stable environment for reproducible evaluation, this repository pins specific versions of the hardware configuration and inference code. For the latest upstream features, please refer to the main [LeRobot](https://github.com/huggingface/lerobot) repository.
 
-This repo focuses on pytorch training of Pi-series policy with large decentralized-collected so100 dataset. It is built upon [🤗 LeRobot](https://github.com/huggingface/lerobot). To maintain the ability to test the trained model in one place, I kept a stable version of the hardware setup and inference code in this repo. Please refer to the [LeRobot](https://github.com/huggingface/lerobot) repo for the latest changes. 
+The objective is to enable all contributors to the LeRobot dataset pool to leverage the full potential of this data collection effort. By providing the complete data collection and annotation pipeline as well as efficient and bug-free training script, this repository aims to create a virtuous cycle. 
+
+Mirroring the philosophy of DeFi (Decentralized Finance), **DePi** aims to incentivize decentralized data contributions to build a more powerful, community-shared resource: a diverse robotic training dataset that can be used to train state-of-the-art VLA models.
+
+## News
+- [2025.10.22] DePi code and model is released.
 
 ## Features
  - Fast Multi-GPU training of Pi0 policy with torch compile and accelerate
- - Decentralized data collection and annotation pipeline for publicly available so100 datasets
+ - Decentralized data collection and annotation pipeline for publicly available SO100 datasets
  - MultiLeRobotDataset class that supports training on multiple LeRobot datasets at once
  - More to come...
 
