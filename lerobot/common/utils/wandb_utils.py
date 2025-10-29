@@ -16,10 +16,13 @@
 import logging
 import os
 import re
+import warnings
 from glob import glob
 from pathlib import Path
 
+import wandb
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
+from pydantic.warnings import UnsupportedFieldAttributeWarning
 from termcolor import colored
 
 from lerobot.common.constants import PRETRAINED_MODEL_DIR
@@ -67,7 +70,13 @@ class WandBLogger:
 
         # Set up WandB.
         os.environ["WANDB_SILENT"] = "True"
-        import wandb
+        # wandb attaches `frozen`/`repr` metadata to standalone pydantic Fields, which triggers noisy warnings.
+        warnings.filterwarnings(
+            "ignore",
+            message=r"The '(?:repr|frozen)' attribute with value .* was provided to the `Field\(\)` function",
+            category=UnsupportedFieldAttributeWarning,
+            module=r"wandb(\.|$)",
+        )
 
         wandb_run_id = (
             cfg.wandb.run_id

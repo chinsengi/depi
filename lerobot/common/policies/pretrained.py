@@ -15,7 +15,7 @@ import abc
 import logging
 import os
 from pathlib import Path
-from typing import Tuple, Type, TypeVar, List, Union
+from typing import List, Tuple, Type, TypeVar, Union
 
 import packaging
 import safetensors
@@ -24,14 +24,13 @@ from accelerate.utils import is_compiled_module
 from huggingface_hub import hf_hub_download
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 from huggingface_hub.errors import HfHubHTTPError
+from safetensors.torch import _remove_duplicate_names
 from safetensors.torch import load_model as load_model_as_safetensor
 from safetensors.torch import save_model as save_model_as_safetensor
 from torch import Tensor, nn
 
 from lerobot.common.utils.hub import HubMixin
 from lerobot.configs.policies import PreTrainedConfig
-
-from safetensors.torch import _remove_duplicate_names
 
 T = TypeVar("T", bound="PreTrainedPolicy")
 
@@ -45,6 +44,7 @@ DEFAULT_POLICY_CARD = """
 This policy has been pushed to the Hub using [LeRobot](https://github.com/huggingface/lerobot):
 - Docs: {{ docs_url | default("[More Information Needed]", true) }}
 """
+
 
 def load_model(
     model: torch.nn.Module,
@@ -77,9 +77,7 @@ def load_model(
     """
     # state_dict = load_file(filename, device=device)
     model_state_dict = model.state_dict()
-    to_removes = _remove_duplicate_names(
-        model_state_dict, preferred_names=state_dict.keys()
-    )
+    to_removes = _remove_duplicate_names(model_state_dict, preferred_names=state_dict.keys())
 
     reverse_to_remove = {}
     for key, to_remove_group in to_removes.items():
@@ -96,12 +94,9 @@ def load_model(
     invalid = set()
 
     for k, mv in model_state_dict.items():
-        actual_k = reverse_to_remove.get(k, None)
-        if actual_k is not None:
-            look_k = actual_k
-        else:
-            look_k = k
-        v = state_dict.get(look_k, None)
+        actual_k = reverse_to_remove.get(k)
+        look_k = actual_k if actual_k is not None else k
+        v = state_dict.get(look_k)
         if v is None:
             missing.add(k)
         else:
@@ -128,8 +123,8 @@ def load_model(
             error += f"\n    Invalid key(s) in state_dict: {invalid_keys}, mismatched dtypes or shape."
         del state_dict
         raise RuntimeError(error)
-    
-    torch_missing, torch_unexpected = model.load_state_dict(state_dict, strict=strict)
+
+    torch_missing, torch_unexpected = model.load_state_dict(state_dict, strict=False)
     # Sanity check that the work we've done matches
     # Pytorch internal loading.
     torch_missing = set(torch_missing)
@@ -143,6 +138,7 @@ def load_model(
     assert torch_missing == missing, f"{torch_missing} != {missing}"
     assert torch_unexpected == unexpected, f"{torch_unexpected} != {unexpected}"
     return missing, unexpected
+
 
 class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
     """
@@ -275,22 +271,22 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
                 model.to(map_location)
         else:
             state_dict = safetensors.torch.load_file(model_file, device=map_location)
-            normalizing_weights = {key: state_dict[key] for key in state_dict.keys() if "normal" in key}
+            normalizing_weights = {key: state_dict[key] for key in state_dict if "normal" in key}
             try:
                 model.load_state_dict(normalizing_weights, strict=False)
             except Exception as e:
-                # print(f"Error loading normalizing weights: {e}")
+                print(f"Error loading normalizing weights: {e}")
                 # delete the normalizing weights
                 # strict = False
                 # for key in normalizing_weights.keys():
                 #     del state_dict[key]
-                    
+
                 # Or we can tile the normalizing weights to fit bimanual
-                for key in normalizing_weights.keys():
+                for key in normalizing_weights:
                     state_dict[key] = normalizing_weights[key].repeat(2)
             load_model(model, state_dict, strict=strict, device=map_location)
-            # safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
-            
+            safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
+
         return model
 
     # def generate_model_card(self, *args, **kwargs) -> ModelCard:
