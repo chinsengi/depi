@@ -285,7 +285,7 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
                 for key in normalizing_weights:
                     state_dict[key] = normalizing_weights[key].repeat(2)
             load_model(model, state_dict, strict=strict, device=map_location)
-            safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
+            # safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
 
         return model
 
