@@ -184,3 +184,10 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
         # something like --policy.path (in addition to --policy.type)
         cli_overrides = policy_kwargs.pop("cli_overrides", [])
         return draccus.parse(cls, config_file, args=cli_overrides)
+
+
+# Ensure built-in policy configs are registered with the choice registry.
+try:
+    import lerobot.common.policies  # noqa: F401
+except Exception as e:
+    raise e

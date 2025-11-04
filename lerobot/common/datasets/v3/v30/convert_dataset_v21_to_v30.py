@@ -80,8 +80,8 @@ from .utils import (
     write_tasks,
 )
 from .video_utils import concatenate_video_files, get_video_duration_in_s
-from lerobot.utils.constants import HF_LEROBOT_HOME
-from lerobot.utils.utils import init_logging
+from lerobot.common.utils.constants import HF_LEROBOT_HOME
+from lerobot.common.utils.utils import init_logging
 
 V21 = "v2.1"
 V30 = "v3.0"

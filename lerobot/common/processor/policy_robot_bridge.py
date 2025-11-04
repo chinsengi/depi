@@ -21,7 +21,7 @@ import torch
 
 from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
 from lerobot.processor import ActionProcessorStep, PolicyAction, ProcessorStepRegistry, RobotAction
-from lerobot.utils.constants import ACTION
+from lerobot.common.utils.constants import ACTION
 
 
 @dataclass

@@ -20,27 +20,14 @@ from typing import TypeVar
 
 import imageio
 
-JsonLike = (
-    str
-    | int
-    | float
-    | bool
-    | None
-    | list["JsonLike"]
-    | dict[str, "JsonLike"]
-    | tuple["JsonLike", ...]
-)
+JsonLike = str | int | float | bool | None | list["JsonLike"] | dict[str, "JsonLike"] | tuple["JsonLike", ...]
 T = TypeVar("T", bound=JsonLike)
 
 
 def write_video(video_path, stacked_frames, fps):
     # Filter out DeprecationWarnings raised from pkg_resources
     with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            "pkg_resources is deprecated as an API",
-            category=DeprecationWarning,
-        )
+        warnings.filterwarnings("ignore", "pkg_resources is deprecated as an API", category=DeprecationWarning)
         imageio.mimsave(video_path, stacked_frames, fps=fps)
 
 

@@ -17,16 +17,21 @@ import json
 import logging
 from pprint import pformat
 
+import packaging.version
 import torch
 from tqdm import tqdm
 from data_ids.filter_so100_data import get_repo_ids
-
 from lerobot.common.datasets.lerobot_dataset import (
     LeRobotDataset,
     LeRobotDatasetMetadata,
     MultiLeRobotDataset,
 )
+from lerobot.common.datasets.lerobot_dataset_v3 import (
+    LeRobotDatasetMetadataV3,
+    LeRobotDatasetV3,
+)
 from lerobot.common.datasets.transforms import ImageTransforms
+from lerobot.common.datasets.utils import get_repo_versions
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.train import TrainPipelineConfig
 
@@ -37,14 +42,14 @@ IMAGENET_STATS = {
 
 
 def resolve_delta_timestamps(
-    cfg: PreTrainedConfig, ds_meta: LeRobotDatasetMetadata
+    cfg: PreTrainedConfig, ds_meta: LeRobotDatasetMetadata | LeRobotDatasetMetadataV3
 ) -> dict[str, list] | None:
     """Resolves delta_timestamps by reading from the 'delta_indices' properties of the PreTrainedConfig.
 
     Args:
         cfg (PreTrainedConfig): The PreTrainedConfig to read delta_indices from.
-        ds_meta (LeRobotDatasetMetadata): The dataset from which features and fps are used to build
-            delta_timestamps against.
+        ds_meta (LeRobotDatasetMetadata | LeRobotDatasetMetadataV3): The dataset metadata providing
+            features and fps against which delta_timestamps are constructed.
 
     Returns:
         dict[str, list] | None: A dictionary of delta_timestamps, e.g.:
@@ -69,6 +74,68 @@ def resolve_delta_timestamps(
     return delta_timestamps
 
 
+def _parse_revision_to_version(revision: str | None) -> packaging.version.Version | None:
+    if revision is None:
+        return None
+    normalized = revision.lstrip("v")
+    try:
+        return packaging.version.parse(normalized)
+    except packaging.version.InvalidVersion:
+        return None
+
+
+def _infer_dataset_major_version(repo_id: str, cfg: TrainPipelineConfig) -> int | None:
+    version_from_revision = _parse_revision_to_version(cfg.dataset.revision)
+    if version_from_revision is not None:
+        return version_from_revision.major
+
+    repo_versions = get_repo_versions(repo_id)
+    if repo_versions:
+        return max(repo_versions).major
+
+    return None
+
+
+def load_delta_timestamps(
+    repo_id: str, cfg: TrainPipelineConfig, major_version: int | None = None
+) -> dict[str, list] | None:
+    """Loads delta timestamps for a given dataset repository ID based on the provided configuration.
+
+    Args:
+        repo_id (str): The repository ID of the dataset.
+        cfg (TrainPipelineConfig): The configuration that contains dataset and policy settings.
+        major_version (int | None): Optional pre-computed major version for the repo.
+
+    Returns:
+        dict[str, list] | None: A dictionary of delta timestamps or None if not applicable.
+    """
+    if major_version is None:
+        major_version = _infer_dataset_major_version(repo_id, cfg)
+    is_v3_dataset = major_version is not None and major_version >= 3
+
+    if is_v3_dataset:
+        ds_meta = LeRobotDatasetMetadataV3(
+            repo_id,
+            root=cfg.dataset.root,
+            revision=cfg.dataset.revision,
+            force_cache_sync=cfg.dataset.force_cache_sync,
+        )
+    else:
+        if major_version is None:
+            logging.warning(
+                "Could not determine dataset version for %s; defaulting to v2.1 metadata.",
+                repo_id,
+            )
+        ds_meta = LeRobotDatasetMetadata(
+            repo_id,
+            root=cfg.dataset.root,
+            revision=cfg.dataset.revision,
+            force_cache_sync=cfg.dataset.force_cache_sync,
+            use_annotated_tasks=cfg.dataset.use_annotated_tasks,
+        )
+    return resolve_delta_timestamps(cfg.policy, ds_meta)
+
+
 def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDataset:
     """Handles the logic of setting up delta timestamps and image transforms before creating a dataset.
 
@@ -83,21 +150,38 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
     )
 
     if cfg.dataset.repo_id is not None:
-        ds_meta = LeRobotDatasetMetadata(
-            cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
-        )
-        delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
-        dataset = LeRobotDataset(
-            cfg.dataset.repo_id,
-            root=cfg.dataset.root,
-            episodes=cfg.dataset.episodes,
-            delta_timestamps=delta_timestamps,
-            image_transforms=image_transforms,
-            revision=cfg.dataset.revision,
-            video_backend=cfg.dataset.video_backend,
-            force_cache_sync=cfg.dataset.force_cache_sync,
-            use_annotated_tasks=cfg.dataset.use_annotated_tasks,
-        )
+        major_version = _infer_dataset_major_version(cfg.dataset.repo_id, cfg)
+        delta_timestamps = load_delta_timestamps(cfg.dataset.repo_id, cfg, major_version=major_version)
+        is_v3_dataset = major_version is not None and major_version >= 3
+
+        if is_v3_dataset:
+            dataset = LeRobotDatasetV3(
+                cfg.dataset.repo_id,
+                root=cfg.dataset.root,
+                episodes=cfg.dataset.episodes,
+                delta_timestamps=delta_timestamps,
+                image_transforms=image_transforms,
+                revision=cfg.dataset.revision,
+                video_backend=cfg.dataset.video_backend,
+                force_cache_sync=cfg.dataset.force_cache_sync,
+            )
+        else:
+            if major_version is None:
+                logging.warning(
+                    "Could not determine dataset version for %s; defaulting to v2.1 dataset loader.",
+                    cfg.dataset.repo_id,
+                )
+            dataset = LeRobotDataset(
+                cfg.dataset.repo_id,
+                root=cfg.dataset.root,
+                episodes=cfg.dataset.episodes,
+                delta_timestamps=delta_timestamps,
+                image_transforms=image_transforms,
+                revision=cfg.dataset.revision,
+                video_backend=cfg.dataset.video_backend,
+                force_cache_sync=cfg.dataset.force_cache_sync,
+                use_annotated_tasks=cfg.dataset.use_annotated_tasks,
+            )
     else:
         # Handle multiple datasets
         # TODO: support more flexible dataset selection
@@ -111,10 +195,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         delta_timestamps_dict = {}
         for repo_id in tqdm(repo_ids, desc="Processing datasets metadata"):
             try:
-                ds_meta = LeRobotDatasetMetadata(
-                    repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
-                )
-                delta_timestamps_dict[repo_id] = resolve_delta_timestamps(cfg.policy, ds_meta)
+                delta_timestamps_dict[repo_id] = load_delta_timestamps(repo_id, cfg)
             except Exception as e:
                 print(f"Error processing dataset {repo_id}: {e}")
                 continue
@@ -135,7 +216,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         )
 
     if cfg.dataset.use_imagenet_stats:
-        if isinstance(dataset, LeRobotDataset):
+        if isinstance(dataset, (LeRobotDataset, LeRobotDatasetV3)):
             for key in dataset.meta.camera_keys:
                 for stats_type, stats in IMAGENET_STATS.items():
                     dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)

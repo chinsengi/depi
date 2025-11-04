@@ -14,16 +14,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import random
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 import numpy as np
 import torch
 from safetensors.torch import load_file, save_file
 
-from lerobot.common.constants import RNG_STATE
 from lerobot.common.datasets.utils import flatten_dict, unflatten_dict
+from lerobot.common.utils.constants import RNG_STATE
 
 
 def serialize_python_rng_state() -> dict[str, torch.Tensor]:
@@ -42,11 +43,7 @@ def deserialize_python_rng_state(rng_state_dict: dict[str, torch.Tensor]) -> Non
     """
     Restores the rng state for `random` from a dictionary produced by `serialize_python_rng_state()`.
     """
-    py_state = (
-        rng_state_dict["py_rng_version"].item(),
-        tuple(rng_state_dict["py_rng_state"].tolist()),
-        None,
-    )
+    py_state = (rng_state_dict["py_rng_version"].item(), tuple(rng_state_dict["py_rng_state"].tolist()), None)
     random.setstate(py_state)
 
 
@@ -123,9 +120,7 @@ def deserialize_rng_state(rng_state_dict: dict[str, torch.Tensor]) -> None:
     """
     py_rng_state_dict = {k: v for k, v in rng_state_dict.items() if k.startswith("py")}
     np_rng_state_dict = {k: v for k, v in rng_state_dict.items() if k.startswith("np")}
-    torch_rng_state_dict = {
-        k: v for k, v in rng_state_dict.items() if k.startswith("torch")
-    }
+    torch_rng_state_dict = {k: v for k, v in rng_state_dict.items() if k.startswith("torch")}
 
     deserialize_python_rng_state(py_rng_state_dict)
     deserialize_numpy_rng_state(np_rng_state_dict)
@@ -169,13 +164,19 @@ def set_rng_state(random_state_dict: dict[str, Any]):
         torch.cuda.random.set_rng_state(random_state_dict["torch_cuda_random_state"])
 
 
-def set_seed(seed) -> None:
+def set_seed(seed: int, accelerator: Callable | None = None) -> None:
     """Set seed for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+    if accelerator:
+        from accelerate.utils import set_seed as _accelerate_set_seed
+
+        _accelerate_set_seed(seed)
 
 
 @contextmanager

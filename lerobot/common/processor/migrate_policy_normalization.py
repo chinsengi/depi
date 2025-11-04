@@ -59,7 +59,7 @@ from safetensors.torch import load_file as load_safetensors
 
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.policies.factory import get_policy_class, make_policy_config, make_pre_post_processors
-from lerobot.utils.constants import ACTION
+from lerobot.common.utils.constants import ACTION
 
 
 def extract_normalization_stats(state_dict: dict[str, torch.Tensor]) -> dict[str, dict[str, torch.Tensor]]:

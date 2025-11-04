@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Iterator, Union
+from collections.abc import Iterator, Sequence
 
 import torch
 
@@ -21,8 +21,11 @@ import torch
 class EpisodeAwareSampler:
     def __init__(
         self,
-        episode_data_index: dict,
-        episode_indices_to_use: Union[list, None] = None,
+        episode_data_index: dict[str, Sequence[int]] | None = None,
+        *,
+        dataset_from_indices: Sequence[int] | None = None,
+        dataset_to_indices: Sequence[int] | None = None,
+        episode_indices_to_use: Sequence[int] | None = None,
         drop_n_first_frames: int = 0,
         drop_n_last_frames: int = 0,
         shuffle: bool = False,
@@ -30,24 +33,40 @@ class EpisodeAwareSampler:
         """Sampler that optionally incorporates episode boundary information.
 
         Args:
-            episode_data_index: Dictionary with keys 'from' and 'to' containing the start and end indices of each episode.
-            episode_indices_to_use: List of episode indices to use. If None, all episodes are used.
-                                    Assumes that episodes are indexed from 0 to N-1.
+            episode_data_index: Dictionary with keys 'from' and 'to' describing episode spans.
+                When provided, overrides ``dataset_from_indices`` and ``dataset_to_indices``.
+            dataset_from_indices: List of indices marking the start of each episode in the dataset.
+            dataset_to_indices: List of indices marking the end of each episode in the dataset.
+            episode_indices_to_use: Iterable of episode indices to include. If None, all episodes are used.
             drop_n_first_frames: Number of frames to drop from the start of each episode.
             drop_n_last_frames: Number of frames to drop from the end of each episode.
             shuffle: Whether to shuffle the indices.
         """
+        if episode_data_index is not None:
+            dataset_from_indices = episode_data_index["from"]
+            dataset_to_indices = episode_data_index["to"]
+
+        if dataset_from_indices is None or dataset_to_indices is None:
+            raise ValueError(
+                "Either `episode_data_index` or both `dataset_from_indices` and `dataset_to_indices` must be provided."
+            )
+
+        if len(dataset_from_indices) != len(dataset_to_indices):
+            raise ValueError("`dataset_from_indices` and `dataset_to_indices` must have the same length.")
+
+        # Normalize containers to simple Python ints to ease downstream processing.
+        normalized_from = [int(idx) for idx in dataset_from_indices]
+        normalized_to = [int(idx) for idx in dataset_to_indices]
+
+        if episode_indices_to_use is not None:
+            episode_indices_to_use = set(int(ep_idx) for ep_idx in episode_indices_to_use)
+
         indices = []
         for episode_idx, (start_index, end_index) in enumerate(
-            zip(episode_data_index["from"], episode_data_index["to"], strict=True)
+            zip(normalized_from, normalized_to, strict=True)
         ):
             if episode_indices_to_use is None or episode_idx in episode_indices_to_use:
-                indices.extend(
-                    range(
-                        start_index.item() + drop_n_first_frames,
-                        end_index.item() - drop_n_last_frames,
-                    )
-                )
+                indices.extend(range(start_index + drop_n_first_frames, end_index - drop_n_last_frames))
 
         self.indices = indices
         self.shuffle = shuffle

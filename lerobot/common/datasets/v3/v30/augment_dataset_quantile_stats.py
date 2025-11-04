@@ -47,7 +47,7 @@ from tqdm import tqdm
 from .compute_stats import DEFAULT_QUANTILES, aggregate_stats, get_feature_stats
 from .lerobot_dataset import CODEBASE_VERSION_V3, LeRobotDatasetV3
 from .utils import write_stats
-from lerobot.utils.utils import init_logging
+from lerobot.common.utils.utils import init_logging
 
 
 def has_quantile_stats(stats: dict[str, dict] | None, quantile_list_keys: list[str] | None = None) -> bool:

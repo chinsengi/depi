@@ -25,7 +25,7 @@ requires-python = ">=3.10.13"
 keywords = ["robotics", "deep learning", "pytorch", "so100", "decentralized-data"]
 dependencies = [
     "cmake>=3.29.0.1",
-    "datasets==4.0.0",
+    "datasets>=4.0.0",
     "deepdiff>=7.0.1",
     "diffusers>=0.27.2",
     "draccus==0.10.0",

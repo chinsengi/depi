@@ -276,6 +276,8 @@ def hf_transform_to_torch(items_dict: dict[torch.Tensor | None]):
 
 
 def is_valid_version(version: str) -> bool:
+    if not version:
+        return False
     try:
         packaging.version.parse(version)
         return True

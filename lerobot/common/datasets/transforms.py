@@ -14,13 +14,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import collections
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any
 
 import torch
 from torchvision.transforms import v2
-from torchvision.transforms.v2 import Transform
-from torchvision.transforms.v2 import functional as F  # noqa: N812
+from torchvision.transforms.v2 import (
+    Transform,
+    functional as F,  # noqa: N812
+)
 
 
 class RandomSubsetApply(Transform):
@@ -119,38 +122,28 @@ class SharpnessJitter(Transform):
         self.sharpness = self._check_input(sharpness)
 
     def _check_input(self, sharpness):
-        if isinstance(sharpness, (int, float)):
+        if isinstance(sharpness, (int | float)):
             if sharpness < 0:
-                raise ValueError(
-                    "If sharpness is a single number, it must be non negative."
-                )
+                raise ValueError("If sharpness is a single number, it must be non negative.")
             sharpness = [1.0 - sharpness, 1.0 + sharpness]
             sharpness[0] = max(sharpness[0], 0.0)
         elif isinstance(sharpness, collections.abc.Sequence) and len(sharpness) == 2:
             sharpness = [float(v) for v in sharpness]
         else:
-            raise TypeError(
-                f"{sharpness=} should be a single number or a sequence with length 2."
-            )
+            raise TypeError(f"{sharpness=} should be a single number or a sequence with length 2.")
 
         if not 0.0 <= sharpness[0] <= sharpness[1]:
-            raise ValueError(
-                f"sharpness values should be between (0., inf), but got {sharpness}."
-            )
+            raise ValueError(f"sharpness values should be between (0., inf), but got {sharpness}.")
 
         return float(sharpness[0]), float(sharpness[1])
 
     def make_params(self, flat_inputs: list[Any]) -> dict[str, Any]:
-        sharpness_factor = (
-            torch.empty(1).uniform_(self.sharpness[0], self.sharpness[1]).item()
-        )
+        sharpness_factor = torch.empty(1).uniform_(self.sharpness[0], self.sharpness[1]).item()
         return {"sharpness_factor": sharpness_factor}
 
     def transform(self, inpt: Any, params: dict[str, Any]) -> Any:
         sharpness_factor = params["sharpness_factor"]
-        return self._call_kernel(
-            F.adjust_sharpness, inpt, sharpness_factor=sharpness_factor
-        )
+        return self._call_kernel(F.adjust_sharpness, inpt, sharpness_factor=sharpness_factor)
 
 
 @dataclass
@@ -215,6 +208,11 @@ class ImageTransformsConfig:
                 type="SharpnessJitter",
                 kwargs={"sharpness": (0.5, 1.5)},
             ),
+            "affine": ImageTransformConfig(
+                weight=1.0,
+                type="RandomAffine",
+                kwargs={"degrees": (-5.0, 5.0), "translate": (0.05, 0.05)},
+            ),
         }
     )
 
@@ -226,6 +224,8 @@ def make_transform_from_config(cfg: ImageTransformConfig):
         return v2.ColorJitter(**cfg.kwargs)
     elif cfg.type == "SharpnessJitter":
         return SharpnessJitter(**cfg.kwargs)
+    elif cfg.type == "RandomAffine":
+        return v2.RandomAffine(**cfg.kwargs)
     else:
         raise ValueError(f"Transform '{cfg.type}' is not valid.")
 

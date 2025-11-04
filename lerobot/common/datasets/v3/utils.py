@@ -38,13 +38,13 @@ from PIL import Image as PILImage
 from torchvision import transforms
 
 from lerobot.configs.types import FeatureType, PolicyFeature
-from .backward_compatibility import (
+from lerobot.common.datasets.backward_compatibility import (
     FUTURE_MESSAGE,
     BackwardCompatibilityError,
     ForwardCompatibilityError,
 )
-from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_STR
-from lerobot.utils.utils import SuppressProgressBars, is_valid_numpy_dtype_string
+from lerobot.common.utils.constants import ACTION, OBS_ENV_STATE, OBS_STR
+from lerobot.common.utils.utils import SuppressProgressBars, is_valid_numpy_dtype_string
 
 DEFAULT_CHUNK_SIZE = 1000  # Max number of files per chunk
 DEFAULT_DATA_FILE_SIZE_IN_MB = 100  # Max size per file

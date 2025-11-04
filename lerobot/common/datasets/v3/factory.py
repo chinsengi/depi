@@ -27,7 +27,7 @@ from .lerobot_dataset import (
 )
 from .streaming_dataset import StreamingLeRobotDatasetV3
 from .transforms import ImageTransforms
-from lerobot.utils.constants import ACTION, OBS_PREFIX, REWARD
+from lerobot.common.utils.constants import ACTION, OBS_PREFIX, REWARD
 
 IMAGENET_STATS = {
     "mean": [[[0.485]], [[0.456]], [[0.406]]],  # (c,1,1)

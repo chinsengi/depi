@@ -41,7 +41,7 @@ from .video_utils import (
     VideoDecoderCache,
     decode_video_frames_torchcodec,
 )
-from lerobot.utils.constants import HF_LEROBOT_HOME, LOOKAHEAD_BACKTRACKTABLE, LOOKBACK_BACKTRACKTABLE
+from lerobot.common.utils.constants import HF_LEROBOT_HOME, LOOKAHEAD_BACKTRACKTABLE, LOOKBACK_BACKTRACKTABLE
 
 
 class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):

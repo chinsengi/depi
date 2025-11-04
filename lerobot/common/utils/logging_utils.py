@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Callable
 from typing import Any
 
 from lerobot.common.utils.utils import format_big_number
@@ -23,7 +24,7 @@ class AverageMeter:
     Adapted from https://github.com/pytorch/examples/blob/main/imagenet/main.py
     """
 
-    def __init__(self, name: str, fmt: str = ":.4f"):
+    def __init__(self, name: str, fmt: str = ":f"):
         self.name = name
         self.fmt = fmt
         self.reset()
@@ -77,13 +78,14 @@ class MetricsTracker:
     __keys__ = [
         "_batch_size",
         "_num_frames",
-        "_avg_samples_per_ep",
-        "metrics",
-        "steps",
-        "samples",
-        "episodes",
-        "epochs",
-    ]
+    "_avg_samples_per_ep",
+    "metrics",
+    "steps",
+    "samples",
+    "episodes",
+    "epochs",
+    "accelerator",
+]
 
     def __init__(
         self,
@@ -92,6 +94,7 @@ class MetricsTracker:
         num_episodes: int,
         metrics: dict[str, AverageMeter],
         initial_step: int = 0,
+        accelerator: Callable | None = None,
     ):
         self.__dict__.update(dict.fromkeys(self.__keys__))
         self._batch_size = batch_size
@@ -105,6 +108,7 @@ class MetricsTracker:
         self.samples = self.steps * self._batch_size
         self.episodes = self.samples / self._avg_samples_per_ep
         self.epochs = self.samples / self._num_frames
+        self.accelerator = accelerator
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -112,7 +116,7 @@ class MetricsTracker:
             "samples": self.samples,
             "epochs": self.epochs,
         }
-        
+
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         self.steps = state_dict["steps"]
         self.samples = state_dict["samples"]
@@ -139,7 +143,7 @@ class MetricsTracker:
         Updates metrics that depend on 'step' for one step.
         """
         self.steps += 1
-        self.samples += self._batch_size
+        self.samples += self._batch_size * (self.accelerator.num_processes if self.accelerator else 1)
         self.episodes = self.samples / self._avg_samples_per_ep
         self.epochs = self.samples / self._num_frames
 

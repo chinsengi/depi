@@ -25,7 +25,7 @@ from lerobot.processor.pipeline import (
     ProcessorStepRegistry,
 )
 from lerobot.robots import Robot
-from lerobot.utils.constants import OBS_STATE
+from lerobot.common.utils.constants import OBS_STATE
 
 
 @dataclass

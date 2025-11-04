@@ -46,7 +46,7 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file, save_file
 
 from lerobot.configs.types import PipelineFeatureType, PolicyFeature
-from lerobot.utils.hub import HubMixin
+from lerobot.common.utils.hub import HubMixin
 
 from .converters import batch_to_transition, create_transition, transition_to_batch
 from .core import EnvAction, EnvTransition, PolicyAction, RobotAction, TransitionKey
@@ -422,7 +422,7 @@ class DataProcessorPipeline(HubMixin, Generic[TInput, TOutput]):
         """
         if save_directory is None:
             # Use default directory in HF_LEROBOT_HOME
-            from lerobot.utils.constants import HF_LEROBOT_HOME
+            from lerobot.common.utils.constants import HF_LEROBOT_HOME
 
             sanitized_name = re.sub(r"[^a-zA-Z0-9_]", "_", self.name.lower())
             save_directory = HF_LEROBOT_HOME / "processors" / sanitized_name

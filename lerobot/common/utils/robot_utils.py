@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,18 +14,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Robot-specific timing helpers."""
+
+from __future__ import annotations
+
 import platform
 import time
 
 
-def busy_wait(seconds):
-    if platform.system() == "Darwin" or platform.system() == "Windows":
-        # On Mac and Windows, `time.sleep` is not accurate and we need to use this while loop trick,
-        # but it consumes CPU cycles.
+def busy_wait(seconds: float) -> None:
+    """Accurate sleep utility that handles OS-specific limitations."""
+    if platform.system() in {"Darwin", "Windows"}:  # pragma: no cover - timing dependent
         end_time = time.perf_counter() + seconds
         while time.perf_counter() < end_time:
             pass
     else:
-        # On Linux time.sleep is accurate
         if seconds > 0:
             time.sleep(seconds)

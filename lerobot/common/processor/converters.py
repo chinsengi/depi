@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from lerobot.utils.constants import ACTION, DONE, OBS_PREFIX, REWARD, TRUNCATED
+from lerobot.common.utils.constants import ACTION, DONE, OBS_PREFIX, REWARD, TRUNCATED
 
 from .core import EnvTransition, PolicyAction, RobotAction, RobotObservation, TransitionKey
 

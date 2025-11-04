@@ -50,7 +50,7 @@ from .utils import (
     write_stats,
     write_tasks,
 )
-from lerobot.utils.constants import HF_LEROBOT_HOME
+from lerobot.common.utils.constants import HF_LEROBOT_HOME
 
 
 def _load_episode_with_stats(src_dataset: LeRobotDatasetV3, episode_idx: int) -> dict:

@@ -12,21 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Common exception classes for device lifecycle management."""
+
+from __future__ import annotations
+
 
 class DeviceNotConnectedError(ConnectionError):
-    """Exception raised when the device is not connected."""
+    """Raised when attempting to use a device that is not connected."""
 
-    def __init__(self, message="This device is not connected. Try calling `connect()` first."):
-        self.message = message
-        super().__init__(self.message)
+    def __init__(self, message: str = "This device is not connected. Try calling `connect()` first.") -> None:
+        super().__init__(message)
 
 
 class DeviceAlreadyConnectedError(ConnectionError):
-    """Exception raised when the device is already connected."""
+    """Raised when attempting to connect an already connected device."""
 
     def __init__(
         self,
-        message="This device is already connected. Try not calling `connect()` twice.",
-    ):
-        self.message = message
-        super().__init__(self.message)
+        message: str = "This device is already connected. Try not calling `connect()` twice.",
+    ) -> None:
+        super().__init__(message)
