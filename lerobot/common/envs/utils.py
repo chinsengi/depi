@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import warnings
+from collections.abc import Mapping, Sequence
+from functools import singledispatch
 from typing import Any
 
 import einops
@@ -47,37 +49,38 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
             imgs = {"observation.image": observations["pixels"]}
 
         for imgkey, img in imgs.items():
-            # TODO(aliberts, rcadene): use transforms.ToTensor()?
-            img = torch.from_numpy(img)
+            img_tensor = torch.from_numpy(img)
 
-            # sanity check that images are channel last
-            _, h, w, c = img.shape
+            if img_tensor.ndim == 3:
+                img_tensor = img_tensor.unsqueeze(0)
+
+            _, h, w, c = img_tensor.shape
             assert (
                 c < h and c < w
-            ), f"expect channel last images, but instead got {img.shape=}"
+            ), f"expect channel last images, but instead got {img_tensor.shape=}"
 
-            # sanity check that images are uint8
             assert (
-                img.dtype == torch.uint8
-            ), f"expect torch.uint8, but instead {img.dtype=}"
+                img_tensor.dtype == torch.uint8
+            ), f"expect torch.uint8, but instead {img_tensor.dtype=}"
 
-            # convert to channel first of type float32 in range [0,1]
-            img = einops.rearrange(img, "b h w c -> b c h w").contiguous()
-            img = img.type(torch.float32)
-            img /= 255
+            img_tensor = einops.rearrange(img_tensor, "b h w c -> b c h w").contiguous()
+            img_tensor = img_tensor.type(torch.float32)
+            img_tensor /= 255
 
-            return_observations[imgkey] = img
+            return_observations[imgkey] = img_tensor
 
     if "environment_state" in observations:
-        return_observations["observation.environment_state"] = torch.from_numpy(
-            observations["environment_state"]
-        ).float()
+        env_state = torch.from_numpy(observations["environment_state"]).float()
+        if env_state.dim() == 1:
+            env_state = env_state.unsqueeze(0)
+        return_observations["observation.environment_state"] = env_state
 
     # TODO(rcadene): enable pixels only baseline with `obs_type="pixels"` in environment by removing
     # requirement for "agent_pos"
-    return_observations["observation.state"] = torch.from_numpy(
-        observations["agent_pos"]
-    ).float()
+    agent_pos = torch.from_numpy(observations["agent_pos"]).float()
+    if agent_pos.dim() == 1:
+        agent_pos = agent_pos.unsqueeze(0)
+    return_observations["observation.state"] = agent_pos
     return return_observations
 
 
@@ -140,3 +143,41 @@ def add_envs_task(
         num_envs = observation[list(observation.keys())[0]].shape[0]
         observation["task"] = ["" for _ in range(num_envs)]
     return observation
+
+
+def _close_single_env(env: Any) -> None:
+    try:
+        env.close()
+    except Exception as exc:  # pragma: no cover - best effort close
+        print(f"Exception while closing env {env}: {exc}")
+
+
+@singledispatch
+def close_envs(obj: Any) -> None:
+    """Close an environment or nested collection of environments."""
+
+    raise NotImplementedError(f"close_envs not implemented for type {type(obj).__name__}")
+
+
+@close_envs.register
+def _(env: Mapping) -> None:  # type: ignore[misc]
+    for value in env.values():
+        close_envs(value)
+
+
+@close_envs.register
+def _(envs: Sequence) -> None:  # type: ignore[misc]
+    if isinstance(envs, (str | bytes)):
+        return
+    for value in envs:
+        close_envs(value)
+
+
+@close_envs.register
+def _(env: gym.Env) -> None:  # type: ignore[misc]
+    _close_single_env(env)
+
+
+@close_envs.register
+def _(env: gym.vector.VectorEnv) -> None:  # type: ignore[misc]
+    _close_single_env(env)

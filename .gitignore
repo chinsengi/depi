@@ -181,3 +181,4 @@ so100_data/test_annotations/
 *.tar.zst
 tests/
 so100_data/annotate.sh
+external/

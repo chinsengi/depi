@@ -17,7 +17,20 @@ import importlib
 
 import gymnasium as gym
 
-from lerobot.common.envs.configs import AlohaEnv, EnvConfig, PushtEnv, XarmEnv
+from lerobot.common.envs.configs import (
+    AlohaEnv,
+    EnvConfig,
+    LiberoEnv,
+    MetaworldEnv,
+    PushtEnv,
+    XarmEnv,
+)
+
+
+class UnsupportedRemoteEnvError(RuntimeError):
+    """Raised when attempting to build a remote environment in this distribution."""
+
+    pass
 
 
 def make_env_config(env_type: str, **kwargs) -> EnvConfig:
@@ -27,30 +40,77 @@ def make_env_config(env_type: str, **kwargs) -> EnvConfig:
         return PushtEnv(**kwargs)
     elif env_type == "xarm":
         return XarmEnv(**kwargs)
+    elif env_type == "libero":
+        return LiberoEnv(**kwargs)
+    elif env_type == "metaworld":
+        return MetaworldEnv(**kwargs)
     else:
         raise ValueError(f"Policy type '{env_type}' is not available.")
 
 
 def make_env(
-    cfg: EnvConfig, n_envs: int = 1, use_async_envs: bool = False
-) -> gym.vector.VectorEnv | None:
+    cfg: EnvConfig | str,
+    n_envs: int = 1,
+    use_async_envs: bool = False,
+    hub_cache_dir: str | None = None,
+    trust_remote_code: bool = False,
+) -> dict[str, dict[int, gym.vector.VectorEnv]]:
     """Makes a gym vector environment according to the config.
 
     Args:
-        cfg (EnvConfig): the config of the environment to instantiate.
+        cfg (EnvConfig | str): the config of the environment to instantiate.
         n_envs (int, optional): The number of parallelized env to return. Defaults to 1.
         use_async_envs (bool, optional): Whether to return an AsyncVectorEnv or a SyncVectorEnv. Defaults to
             False.
+        hub_cache_dir (str | None): kept for parity with upstream signature; not supported here.
+        trust_remote_code (bool): kept for parity with upstream signature; not supported here.
 
     Raises:
         ValueError: if n_envs < 1
         ModuleNotFoundError: If the requested env package is not installed
+        UnsupportedRemoteEnvError: If a Hugging Face Hub environment string is provided.
 
     Returns:
-        gym.vector.VectorEnv: The parallelized gym.env instance.
+        dict[str, dict[int, gym.vector.VectorEnv]]: Mapping of suite name to vectorized envs.
     """
+    if isinstance(cfg, str):
+        raise UnsupportedRemoteEnvError(
+            "Hub-provided environments are not supported in this distribution."
+        )
+
     if n_envs < 1:
-        raise ValueError("`n_envs must be at least 1")
+        raise ValueError("`n_envs` must be at least 1")
+
+    env_cls = gym.vector.AsyncVectorEnv if use_async_envs else gym.vector.SyncVectorEnv
+
+    if "libero" in cfg.type:
+        from lerobot.common.envs.libero import create_libero_envs
+
+        if cfg.task is None:
+            raise ValueError("LiberoEnv requires a task to be specified")
+
+        return create_libero_envs(
+            task=cfg.task,
+            n_envs=n_envs,
+            camera_name=cfg.camera_name,
+            init_states=cfg.init_states,
+            camera_name_mapping=cfg.camera_name_mapping,
+            gym_kwargs=cfg.gym_kwargs,
+            env_cls=env_cls,
+        )
+
+    if "metaworld" in cfg.type:
+        from lerobot.common.envs.metaworld import create_metaworld_envs
+
+        if cfg.task is None:
+            raise ValueError("MetaWorld requires a task to be specified")
+
+        return create_metaworld_envs(
+            task=cfg.task,
+            n_envs=n_envs,
+            gym_kwargs=cfg.gym_kwargs,
+            env_cls=env_cls,
+        )
 
     package_name = f"gym_{cfg.type}"
 
@@ -64,13 +124,12 @@ def make_env(
 
     gym_handle = f"{package_name}/{cfg.task}"
 
-    # batched version of the env that returns an observation of shape (b, c)
-    env_cls = gym.vector.AsyncVectorEnv if use_async_envs else gym.vector.SyncVectorEnv
-    env = env_cls(
-        [
-            lambda: gym.make(gym_handle, disable_env_checker=True, **cfg.gym_kwargs)
-            for _ in range(n_envs)
-        ]
+    def _make_one() -> gym.Env:
+        return gym.make(gym_handle, disable_env_checker=True, **cfg.gym_kwargs)
+
+    vec_env = env_cls(
+        [_make_one for _ in range(n_envs)],
+        autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
     )
 
-    return env
+    return {cfg.type: {0: vec_env}}

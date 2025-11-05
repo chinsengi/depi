@@ -14,6 +14,7 @@
 
 import logging
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from pprint import pformat
 from typing import Any
@@ -22,6 +23,7 @@ from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate.scheduler import AcceleratedScheduler
 from accelerate.utils import DistributedDataParallelKwargs, TorchDynamoPlugin
 from termcolor import colored
+import torch
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 
@@ -29,6 +31,8 @@ from lerobot.common.constants import CHECKPOINTS_DIR
 from lerobot.common.datasets.factory import make_dataset
 from lerobot.common.datasets.lerobot_dataset import MultiLeRobotDataset
 from lerobot.common.datasets.sampler import EpisodeAwareSampler
+from lerobot.common.envs.factory import make_env
+from lerobot.common.envs.utils import close_envs
 from lerobot.common.optim.factory import make_optimizer_and_scheduler
 from lerobot.common.policies.factory import make_policy
 from lerobot.common.policies.pretrained import PreTrainedPolicy
@@ -37,6 +41,7 @@ from lerobot.common.utils.random_utils import set_seed
 from lerobot.common.utils.train_utils import (
     cleanup_old_checkpoints,
     get_step_checkpoint_dir,
+    get_step_identifier,
     load_training_step,
     save_training_step,
     update_last_checkpoint,
@@ -49,6 +54,7 @@ from lerobot.common.utils.utils import (
 from lerobot.common.utils.wandb_utils import WandBLogger
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
+from lerobot.scripts.eval import eval_policy
 
 
 def update_policy(
@@ -143,6 +149,8 @@ def train(cfg: TrainPipelineConfig):
     logging.info(pformat(cfg.to_dict()))
 
     device = accelerator.device
+    if cfg.policy is not None:
+        cfg.policy.device = str(device)
     # No effect on performance whatsoever
     # torch.backends.cudnn.benchmark = True
     # torch.backends.cuda.matmul.allow_tf32 = True
@@ -157,6 +165,15 @@ def train(cfg: TrainPipelineConfig):
     # Now all other processes can safely load the dataset
     if not accelerator.is_main_process:
         dataset = make_dataset(cfg)
+
+    eval_env = None
+    if cfg.eval_freq > 0 and cfg.env is not None and accelerator.is_main_process:
+        logging.info("Creating env")
+        eval_env = make_env(
+            cfg.env,
+            n_envs=cfg.eval.batch_size,
+            use_async_envs=cfg.eval.use_async_envs,
+        )
 
     # enable wandb logging after dataset is created
     if cfg.wandb.enable and cfg.wandb.project and accelerator.is_main_process:
@@ -322,29 +339,34 @@ def train(cfg: TrainPipelineConfig):
             #     output_dict["l2_loss"] = 0.0
 
             train_tracker.step()
-            is_log_step, is_saving_step = False, False
+            is_log_step = is_saving_step = is_eval_step = False
             if (batch_idx + 1) % cfg.gradient_accumulation_steps == 0:
-                is_log_step = cfg.log_freq > 0 and (batch_idx + 1) % cfg.log_freq == 0
-                is_saving_step = (current_opt_step + 1) % cfg.save_freq == 0 or current_opt_step == cfg.steps
+                global_opt_step = current_opt_step + 1
+                is_log_step = cfg.log_freq > 0 and global_opt_step % cfg.log_freq == 0
+                is_saving_step = (
+                    (cfg.save_freq > 0 and global_opt_step % cfg.save_freq == 0)
+                    or global_opt_step == cfg.steps
+                )
+                is_eval_step = cfg.eval_freq > 0 and global_opt_step % cfg.eval_freq == 0
 
             if is_log_step:
-                logging.info(f"batch_idx: {batch_idx}, opt_step: {current_opt_step}")
+                logging.info(f"batch_idx: {batch_idx}, opt_step: {global_opt_step}")
                 logging.info(train_tracker)
                 if wandb_logger:
                     wandb_log_dict = train_tracker.to_dict()
                     if output_dict:
                         wandb_log_dict.update(output_dict)
-                    wandb_logger.log_dict(wandb_log_dict, current_opt_step)
+                    wandb_logger.log_dict(wandb_log_dict, global_opt_step)
                 train_tracker.reset_averages()
 
             if cfg.save_checkpoint and is_saving_step and accelerator.is_main_process:
-                checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, current_opt_step)
+                checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, global_opt_step)
 
                 # Use accelerator's save method
-                logging.info(f"Checkpoint policy after step {current_opt_step} to {checkpoint_dir}")
+                logging.info(f"Checkpoint policy after step {global_opt_step} to {checkpoint_dir}")
                 accelerator.save_state(checkpoint_dir)
                 cfg.save_pretrained(checkpoint_dir / "configs")
-                save_training_step(current_opt_step, checkpoint_dir)
+                save_training_step(global_opt_step, checkpoint_dir)
 
                 update_last_checkpoint(checkpoint_dir)
                 # Clean up old checkpoints, keeping only the last 2
@@ -361,11 +383,58 @@ def train(cfg: TrainPipelineConfig):
             if cfg.save_checkpoint and is_saving_step:
                 accelerator.wait_for_everyone()
 
+            if is_eval_step:
+                if accelerator.is_main_process and eval_env is not None:
+                    step_id = get_step_identifier(global_opt_step, cfg.steps)
+                    logging.info(f"Eval policy at step {global_opt_step}")
+                    unwrapped_model = accelerator.unwrap_model(policy.model, keep_torch_compile=False)
+                    wrapped_model = policy.model
+                    policy.model = unwrapped_model
+                    with (
+                        torch.no_grad(),
+                        torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext(),
+                    ):
+                        eval_info = eval_policy(
+                            eval_env,
+                            policy,
+                            cfg.eval.n_episodes,
+                            videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
+                            max_episodes_rendered=4,
+                            start_seed=cfg.seed,
+                        )
+                    policy.model = wrapped_model
+
+                    eval_metrics = {
+                        "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
+                        "pc_success": AverageMeter("success", ":.1f"),
+                        "eval_s": AverageMeter("eval_s", ":.3f"),
+                    }
+                    eval_tracker = MetricsTracker(
+                        cfg.batch_size,
+                        dataset.num_frames,
+                        dataset.num_episodes,
+                        eval_metrics,
+                        initial_step=global_opt_step,
+                    )
+                    eval_tracker.eval_s = eval_info["aggregated"].pop("eval_s")
+                    eval_tracker.avg_sum_reward = eval_info["aggregated"].pop("avg_sum_reward")
+                    eval_tracker.pc_success = eval_info["aggregated"].pop("pc_success")
+                    logging.info(eval_tracker)
+                    if wandb_logger:
+                        wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
+                        wandb_logger.log_dict(wandb_log_dict, global_opt_step, mode="eval")
+                        video_paths = eval_info.get("video_paths", [])
+                        if video_paths:
+                            wandb_logger.log_video(video_paths[0], global_opt_step, mode="eval")
+                accelerator.wait_for_everyone()
+
             end_time = time.perf_counter()
             logging.info(f"Time taken for batch {batch_idx}: {end_time - start_time:.2f} seconds")
 
     policy.model = accelerator.unwrap_model(policy.model)
     policy.save_pretrained(Path(cfg.output_dir) / "pretrained_model")
+    if eval_env is not None and accelerator.is_main_process:
+        close_envs(eval_env)
     logging.info(f"End of training, total steps: {train_tracker.steps}")
 
 

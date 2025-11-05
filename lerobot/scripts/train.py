@@ -30,6 +30,7 @@ from lerobot.common.datasets.factory import make_dataset
 from lerobot.common.datasets.lerobot_dataset import MultiLeRobotDataset
 from lerobot.common.datasets.sampler import EpisodeAwareSampler
 from lerobot.common.envs.factory import make_env
+from lerobot.common.envs.utils import close_envs
 from lerobot.common.optim.factory import make_optimizer_and_scheduler
 from lerobot.common.policies.factory import make_policy
 from lerobot.common.policies.pretrained import PreTrainedPolicy
@@ -354,9 +355,11 @@ def train(cfg: TrainPipelineConfig):
             if wandb_logger:
                 wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
                 wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
-                wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
+                video_paths = eval_info.get("video_paths", [])
+                if video_paths:
+                    wandb_logger.log_video(video_paths[0], step, mode="eval")
     if eval_env:
-        eval_env.close()
+        close_envs(eval_env)
     logging.info(f"End of training, total steps: {step}")
 
 

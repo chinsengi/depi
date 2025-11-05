@@ -50,12 +50,13 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 from pprint import pformat
-from typing import Callable
+from typing import Any, Callable
 
 import einops
 import gymnasium as gym
@@ -69,6 +70,7 @@ from lerobot.common.envs.factory import make_env
 from lerobot.common.envs.utils import (
     add_envs_task,
     check_env_attributes_and_types,
+    close_envs,
     preprocess_observation,
 )
 from lerobot.common.policies.factory import make_policy
@@ -231,8 +233,119 @@ def rollout(
     return ret
 
 
+def _aggregate_episode_metrics(episodes: list[dict[str, Any]]) -> dict[str, float]:
+    if not episodes:
+        return {
+            "avg_sum_reward": float("nan"),
+            "avg_max_reward": float("nan"),
+            "pc_success": float("nan"),
+            "n_episodes": 0,
+        }
+
+    sum_rewards = [float(ep["sum_reward"]) for ep in episodes]
+    max_rewards = [float(ep["max_reward"]) for ep in episodes]
+    successes = [float(ep["success"]) for ep in episodes]
+
+    return {
+        "avg_sum_reward": float(np.nanmean(sum_rewards)),
+        "avg_max_reward": float(np.nanmean(max_rewards)),
+        "pc_success": float(np.nanmean(successes) * 100),
+        "n_episodes": len(sum_rewards),
+    }
+
+
+def _eval_policy_multitask(
+    envs: Mapping[str, Mapping[int, gym.vector.VectorEnv]],
+    policy: PreTrainedPolicy,
+    n_episodes: int,
+    *,
+    max_episodes_rendered: int = 0,
+    videos_dir: Path | None = None,
+    return_episode_data: bool = False,
+    start_seed: int | None = None,
+) -> dict[str, Any]:
+    if return_episode_data:
+        raise NotImplementedError(
+            "`return_episode_data=True` is not supported for multi-task evaluations yet."
+        )
+
+    overall_start = time.time()
+    per_task: list[dict[str, Any]] = []
+    per_group: dict[str, dict[str, Any]] = {}
+    all_episodes: list[dict[str, Any]] = []
+    all_video_paths: list[str] = []
+
+    remaining_videos = max_episodes_rendered
+
+    for group_name, task_envs in envs.items():
+        group_episodes: list[dict[str, Any]] = []
+        group_video_paths: list[str] = []
+
+        for task_id, task_env in task_envs.items():
+            task_videos_dir: Path | None = None
+            if videos_dir is not None:
+                task_videos_dir = videos_dir / f"{group_name}_{task_id}"
+                task_videos_dir.mkdir(parents=True, exist_ok=True)
+
+            sub_max_rendered = remaining_videos if remaining_videos > 0 else 0
+
+            task_result = eval_policy(
+                task_env,
+                policy,
+                n_episodes,
+                max_episodes_rendered=sub_max_rendered,
+                videos_dir=task_videos_dir,
+                return_episode_data=False,
+                start_seed=start_seed,
+            )
+
+            task_info = {
+                "task_group": group_name,
+                "task_id": task_id,
+                "metrics": deepcopy(task_result["aggregated"]),
+            }
+            per_task.append(task_info)
+
+            task_episodes = [deepcopy(ep) for ep in task_result["per_episode"]]
+            for episode in task_episodes:
+                episode.setdefault("task_group", group_name)
+                episode.setdefault("task_id", task_id)
+            group_episodes.extend(task_episodes)
+            all_episodes.extend(task_episodes)
+
+            task_videos = task_result.get("video_paths", [])
+            group_video_paths.extend(task_videos)
+            all_video_paths.extend(task_videos)
+            if remaining_videos > 0:
+                remaining_videos = max(0, remaining_videos - len(task_videos))
+
+        per_group[group_name] = _aggregate_episode_metrics(group_episodes)
+        if group_video_paths:
+            per_group[group_name]["video_paths"] = group_video_paths
+
+    aggregated = _aggregate_episode_metrics(all_episodes)
+    aggregated["eval_s"] = time.time() - overall_start
+    aggregated["eval_ep_s"] = (
+        aggregated["eval_s"] / aggregated["n_episodes"]
+        if aggregated["n_episodes"] > 0
+        else float("nan")
+    )
+
+    info: dict[str, Any] = {
+        "per_task": per_task,
+        "per_group": per_group,
+        "per_episode": all_episodes,
+        "aggregated": aggregated,
+    }
+
+    if all_video_paths:
+        info["video_paths"] = all_video_paths
+
+    return info
+
+
 def eval_policy(
-    env: gym.vector.VectorEnv,
+    env: gym.vector.VectorEnv | Mapping[str, Mapping[int, gym.vector.VectorEnv]],
     policy: PreTrainedPolicy,
     n_episodes: int,
     max_episodes_rendered: int = 0,
@@ -242,7 +355,7 @@ def eval_policy(
 ) -> dict:
     """
     Args:
-        env: The batch of environments.
+        env: The batch of environments or a mapping of task groups to vectorized environments.
         policy: The policy.
         n_episodes: The number of episodes to evaluate.
         max_episodes_rendered: Maximum number of episodes to render into videos.
@@ -256,6 +369,17 @@ def eval_policy(
     """
     if max_episodes_rendered > 0 and not videos_dir:
         raise ValueError("If max_episodes_rendered > 0, videos_dir must be provided.")
+
+    if isinstance(env, Mapping):
+        return _eval_policy_multitask(
+            env,
+            policy,
+            n_episodes,
+            max_episodes_rendered=max_episodes_rendered,
+            videos_dir=videos_dir,
+            return_episode_data=return_episode_data,
+            start_seed=start_seed,
+        )
 
     if not isinstance(policy, PreTrainedPolicy):
         raise ValueError(
@@ -559,7 +683,7 @@ def eval_main(cfg: EvalPipelineConfig):
     with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
         json.dump(info, f, indent=2)
 
-    env.close()
+    close_envs(env)
 
     logging.info("End of eval")
 
