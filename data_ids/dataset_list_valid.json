@@ -1,5 +1,7 @@
 [
     "lerobot/svla_so100_sorting",
+    "lerobot/svla_so100_pickplace",
+    "lerobot/svla_so100_stacking",
     "jiuyal2/so100_marker",
     "jiuyal2/so100_cup",
     "yuz1wan/so100_fold_0227_2",

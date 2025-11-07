@@ -59,7 +59,6 @@ from lerobot.common.datasets.utils import (
     create_empty_dataset_info,
     create_lerobot_dataset_card,
     embed_images,
-    ensure_resizable_tensors,
     get_delta_indices,
     get_episode_data_index,
     get_features_from_robot,
@@ -677,8 +676,6 @@ class LeRobotDataset(DatasetCommonMixin, torch.utils.data.Dataset):
             else:
                 item["task"] = self.meta.annotated_tasks[ep_idx]
 
-            item = ensure_resizable_tensors(item)
-
             return item
         except Exception as e:
             logging.warning(f"Stack trace:\n{traceback.format_exc()}")
@@ -1264,8 +1261,6 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         item["dataset_index"] = torch.tensor(dataset_idx)
         # Standardize image keys before returning
         item = self._standardize_image_keys(item)
-
-        item = ensure_resizable_tensors(item)
 
         return item
 
