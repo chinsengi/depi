@@ -271,19 +271,24 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
                 model.to(map_location)
         else:
             state_dict = safetensors.torch.load_file(model_file, device=map_location)
-            normalizing_weights = {key: state_dict[key] for key in state_dict if "normal" in key}
+            normalizing_weights = {key: state_dict[key] for key in state_dict if "normalize" in key}
             try:
                 model.load_state_dict(normalizing_weights, strict=False)
             except Exception as e:
                 print(f"Error loading normalizing weights: {e}")
-                # delete the normalizing weights
-                # strict = False
-                # for key in normalizing_weights.keys():
-                #     del state_dict[key]
-
-                # Or we can tile the normalizing weights to fit bimanual
-                for key in normalizing_weights:
-                    state_dict[key] = normalizing_weights[key].repeat(2)
+                # delete the normalizing weights if the new input dimension is not multiple of the checkpoint
+                keys = list(normalizing_weights.keys())
+                if any(
+                    state_dict[key].shape[0] % model.config.output_features["action"].shape[0] != 0
+                    for key in keys
+                ):
+                    strict = False
+                    for key in normalizing_weights:
+                        del state_dict[key]
+                else:
+                    # Or we can tile the normalizing weights to fit bimanual
+                    for key in normalizing_weights:
+                        state_dict[key] = normalizing_weights[key].repeat(2)
             load_model(model, state_dict, strict=strict, device=map_location)
             # safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
 

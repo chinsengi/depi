@@ -45,13 +45,6 @@ from lerobot.common.datasets._shared_mixins import (
     DatasetMetadataAccessorsMixin,
 )
 from lerobot.common.datasets.backward_compatibility import BackwardCompatibilityError
-from lerobot.common.datasets.video_utils import (
-    VideoFrame,
-    decode_video_frames,
-    encode_video_frames,
-    get_safe_default_codec,
-    get_video_info,
-)
 from lerobot.common.datasets.compute_stats import aggregate_stats, compute_episode_stats
 from lerobot.common.datasets.utils import (
     DEFAULT_FEATURES,
@@ -66,6 +59,7 @@ from lerobot.common.datasets.utils import (
     create_empty_dataset_info,
     create_lerobot_dataset_card,
     embed_images,
+    ensure_resizable_tensors,
     get_delta_indices,
     get_episode_data_index,
     get_features_from_robot,
@@ -86,8 +80,14 @@ from lerobot.common.datasets.utils import (
     write_info,
     write_json,
 )
+from lerobot.common.datasets.video_utils import (
+    VideoFrame,
+    decode_video_frames,
+    encode_video_frames,
+    get_safe_default_codec,
+    get_video_info,
+)
 from lerobot.common.robot_devices.robots.utils import Robot
-
 
 CODEBASE_VERSION = "v2.1"
 
@@ -677,10 +677,14 @@ class LeRobotDataset(DatasetCommonMixin, torch.utils.data.Dataset):
             else:
                 item["task"] = self.meta.annotated_tasks[ep_idx]
 
+            item = ensure_resizable_tensors(item)
+
             return item
         except Exception as e:
             logging.warning(f"Stack trace:\n{traceback.format_exc()}")
-            logging.warning(f"Error getting item {idx} from dataset {self.repo_id}, episode_index: {ep_idx}: {e}")
+            logging.warning(
+                f"Error getting item {idx} from dataset {self.repo_id}, episode_index: {ep_idx}: {e}"
+            )
             self.bad_idx.add(idx)
             len_dataset = self.__len__()
             nmax = min(5, len_dataset)
@@ -954,9 +958,11 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         self.root = Path(root) if root else HF_LEROBOT_HOME
         default_tolerance = 0.0001
         if tolerances_s is None:
-            self.tolerances_s = {repo_id: default_tolerance for repo_id in repo_ids}
+            self.tolerances_s = dict.fromkeys(repo_ids, default_tolerance)
         else:
-            self.tolerances_s = {repo_id: tolerances_s.get(repo_id, default_tolerance) for repo_id in repo_ids}
+            self.tolerances_s = {
+                repo_id: tolerances_s.get(repo_id, default_tolerance) for repo_id in repo_ids
+            }
 
         self._meta = None  # Initialize _meta to None
         # Construct the underlying datasets passing everything but `transform` and `delta_timestamps` which
@@ -1032,13 +1038,13 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         """Instantiate a dataset, automatically selecting v2 or v3 implementation."""
         try:
             v3_module = import_module("lerobot.common.datasets.lerobot_dataset_v3")
-            LeRobotDatasetV3 = getattr(v3_module, "LeRobotDatasetV3")
-        except (ModuleNotFoundError, AttributeError):
-            raise ModuleNotFoundError("LeRobotDatasetV3 is not available in this installation.")
+            lerobot_dataset_v3_cls = v3_module.LeRobotDatasetV3
+        except (ModuleNotFoundError, AttributeError) as err:
+            raise ModuleNotFoundError("LeRobotDatasetV3 is not available in this installation.") from err
 
-        if LeRobotDatasetV3 is not None:
+        if lerobot_dataset_v3_cls is not None:
             try:
-                return LeRobotDatasetV3(
+                return lerobot_dataset_v3_cls(
                     repo_id,
                     root=root,
                     episodes=episodes,
@@ -1258,6 +1264,8 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         item["dataset_index"] = torch.tensor(dataset_idx)
         # Standardize image keys before returning
         item = self._standardize_image_keys(item)
+
+        item = ensure_resizable_tensors(item)
 
         return item
 
