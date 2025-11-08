@@ -20,6 +20,7 @@ from pprint import pformat
 import packaging.version
 import torch
 from tqdm import tqdm
+
 from data_ids.filter_so100_data import get_repo_ids
 from lerobot.common.datasets.lerobot_dataset import (
     LeRobotDataset,
@@ -89,7 +90,11 @@ def _infer_dataset_major_version(repo_id: str, cfg: TrainPipelineConfig) -> int 
     if version_from_revision is not None:
         return version_from_revision.major
 
-    repo_versions = get_repo_versions(repo_id)
+    repo_versions = get_repo_versions(
+        repo_id,
+        root=cfg.dataset.root,
+        force_cache_sync=cfg.dataset.force_cache_sync,
+    )
     if repo_versions:
         return max(repo_versions).major
 
@@ -193,15 +198,43 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             with open(cfg.dataset.repo_ids) as f:
                 repo_ids = json.load(f)
         delta_timestamps_dict = {}
+        filtered_repo_ids = []
+        skipped_repo_ids = []
         for repo_id in tqdm(repo_ids, desc="Processing datasets metadata"):
             try:
-                delta_timestamps_dict[repo_id] = load_delta_timestamps(repo_id, cfg)
+                delta_timestamps = load_delta_timestamps(repo_id, cfg)
             except Exception as e:
-                print(f"Error processing dataset {repo_id}: {e}")
+                logging.warning(
+                    "Skipping dataset %s because delta timestamps could not be loaded: %s",
+                    repo_id,
+                    e,
+                )
+                skipped_repo_ids.append(repo_id)
                 continue
 
+            if not delta_timestamps:
+                logging.warning(
+                    "Skipping dataset %s because no delta timestamps were returned.",
+                    repo_id,
+                )
+                skipped_repo_ids.append(repo_id)
+                continue
+
+            delta_timestamps_dict[repo_id] = delta_timestamps
+            filtered_repo_ids.append(repo_id)
+
+        if not filtered_repo_ids:
+            raise RuntimeError("No datasets left after filtering invalid delta timestamps.")
+
+        if skipped_repo_ids:
+            logging.warning(
+                "Skipped %d dataset(s) with missing delta timestamps. First few: %s",
+                len(skipped_repo_ids),
+                skipped_repo_ids[:5],
+            )
+
         dataset = MultiLeRobotDataset(
-            repo_ids,
+            filtered_repo_ids,
             root=cfg.dataset.root,
             episodes=cfg.dataset.episodes,
             delta_timestamps=delta_timestamps_dict,

@@ -36,11 +36,11 @@ import torch.utils
 from huggingface_hub import HfApi
 from huggingface_hub.errors import RevisionNotFoundError
 
-from lerobot.common.datasets.backward_compatibility import BackwardCompatibilityError
 from lerobot.common.datasets._shared_mixins import (
     DatasetCommonMixin,
     DatasetMetadataAccessorsMixin,
 )
+from lerobot.common.datasets.backward_compatibility import BackwardCompatibilityError
 from lerobot.common.datasets.v3 import utils as v3_utils
 from lerobot.common.datasets.v3.compute_stats import aggregate_stats, compute_episode_stats
 from lerobot.common.datasets.v3.utils import (
@@ -63,7 +63,6 @@ from lerobot.common.datasets.v3.utils import (
     write_info,
 )
 from lerobot.common.datasets.v3.video_utils import (
-    VideoFrame,
     concatenate_video_files,
     decode_video_frames,
     encode_video_frames,
@@ -102,7 +101,12 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
             self.load_metadata()
         except (FileNotFoundError, NotADirectoryError):
             if v3_utils.is_valid_version(self.revision):
-                self.revision = v3_utils.get_safe_version(self.repo_id, self.revision)
+                self.revision = v3_utils.get_safe_version(
+                    self.repo_id,
+                    self.revision,
+                    root=self.root,
+                    force_cache_sync=self.force_cache_sync,
+                )
 
             (self.root / "meta").mkdir(exist_ok=True, parents=True)
             self.pull_from_repo(allow_patterns="meta/")
@@ -128,9 +132,13 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
         table = pa.Table.from_pydict(combined_dict)
 
         if not self.writer:
-            path = Path(self.root / v3_utils.DEFAULT_EPISODES_PATH.format(chunk_index=chunk_idx, file_index=file_idx))
+            path = Path(
+                self.root / v3_utils.DEFAULT_EPISODES_PATH.format(chunk_index=chunk_idx, file_index=file_idx)
+            )
             path.parent.mkdir(parents=True, exist_ok=True)
-            self.writer = pq.ParquetWriter(path, schema=table.schema, compression="snappy", use_dictionary=True)
+            self.writer = pq.ParquetWriter(
+                path, schema=table.schema, compression="snappy", use_dictionary=True
+            )
 
         self.writer.write_table(table)
 
@@ -257,7 +265,9 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
                 latest_num_frames = self.episodes[-1]["dataset_to_index"]
                 episode_dict["dataset_from_index"] = [latest_num_frames]
                 episode_dict["dataset_to_index"] = [latest_num_frames + num_frames]
-                chunk_idx, file_idx = v3_utils.update_chunk_file_indices(chunk_idx, file_idx, self.chunks_size)
+                chunk_idx, file_idx = v3_utils.update_chunk_file_indices(
+                    chunk_idx, file_idx, self.chunks_size
+                )
             else:
                 episode_dict["dataset_from_index"] = [0]
                 episode_dict["dataset_to_index"] = [num_frames]
@@ -282,7 +292,9 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
 
                 if latest_size_in_mb + av_size_per_frame * num_frames >= self.data_files_size_in_mb:
                     self._flush_metadata_buffer()
-                    chunk_idx, file_idx = v3_utils.update_chunk_file_indices(chunk_idx, file_idx, self.chunks_size)
+                    chunk_idx, file_idx = v3_utils.update_chunk_file_indices(
+                        chunk_idx, file_idx, self.chunks_size
+                    )
                     self._close_writer()
 
             episode_dict["meta/episodes/chunk_index"] = [chunk_idx]
@@ -602,7 +614,12 @@ class LeRobotDatasetV3(DatasetCommonMixin, torch.utils.data.Dataset):
                 raise FileNotFoundError("Cached dataset doesn't contain all requested episodes")
         except (AssertionError, FileNotFoundError, NotADirectoryError):
             if is_valid_version(self.revision):
-                self.revision = get_safe_version(self.repo_id, self.revision)
+                self.revision = get_safe_version(
+                    self.repo_id,
+                    self.revision,
+                    root=self.root,
+                    force_cache_sync=force_cache_sync,
+                )
             self.download(download_videos)
             self.hf_dataset = self.load_hf_dataset()
 
@@ -805,11 +822,22 @@ class LeRobotDatasetV3(DatasetCommonMixin, torch.utils.data.Dataset):
         return query_timestamps
 
     def _query_hf_dataset(self, query_indices: dict[str, list[int]]) -> dict:
-        return {
-            key: torch.stack(self.hf_dataset[q_idx][key])
-            for key, q_idx in query_indices.items()
-            if key not in self.meta.video_keys
-        }
+        """
+        Query the dataset for the provided indices, skipping video keys.
+
+        We try to index columns first (self.hf_dataset[key][indices]) which is faster on HF datasets,
+        but fall back to row-first indexing if the dataset backend does not support that access pattern.
+        """
+        result: dict = {}
+        for key, q_idx in query_indices.items():
+            if key in self.meta.video_keys:
+                continue
+            try:
+                tensors = self.hf_dataset[key][q_idx]
+            except (KeyError, TypeError, IndexError):
+                tensors = self.hf_dataset[q_idx][key]
+            result[key] = torch.stack(tensors)
+        return result
 
     def _query_videos(self, query_timestamps: dict[str, list[float]], ep_idx: int) -> dict[str, torch.Tensor]:
         """Note: When using data workers (e.g. DataLoader with num_workers>0), do not call this function
@@ -1339,9 +1367,7 @@ def _load_dataset_version_aware(
     except BackwardCompatibilityError:
         from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetV2
 
-        logging.info(
-            "Detected v2.x dataset format for %s; falling back to LeRobotDatasetV2.", repo_id
-        )
+        logging.info("Detected v2.x dataset format for %s; falling back to LeRobotDatasetV2.", repo_id)
         return LeRobotDatasetV2(
             repo_id,
             root=root,

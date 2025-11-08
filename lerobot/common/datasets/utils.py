@@ -31,9 +31,11 @@ import packaging.version
 import torch
 from datasets.table import embed_table_storage
 from huggingface_hub import DatasetCard, DatasetCardData, HfApi
+from huggingface_hub.errors import RevisionNotFoundError
 from PIL import Image as PILImage
 from torchvision import transforms
 
+from lerobot.common.constants import HF_LEROBOT_HOME
 from lerobot.common.datasets.backward_compatibility import (
     V21_MESSAGE,
     BackwardCompatibilityError,
@@ -290,6 +292,7 @@ def check_version_compatibility(
     version_to_check: str | packaging.version.Version,
     current_version: str | packaging.version.Version,
     enforce_breaking_major: bool = True,
+    future_message: str | None = None,
 ) -> None:
     v_check = (
         packaging.version.parse(version_to_check)
@@ -304,11 +307,57 @@ def check_version_compatibility(
     if v_check.major < v_current.major and enforce_breaking_major:
         raise BackwardCompatibilityError(repo_id, v_check)
     elif v_check.minor < v_current.minor:
-        logging.warning(V21_MESSAGE.format(repo_id=repo_id, version=v_check))
+        warning_template = future_message or V21_MESSAGE
+        logging.warning(warning_template.format(repo_id=repo_id, version=v_check))
 
 
-def get_repo_versions(repo_id: str) -> list[packaging.version.Version]:
+def _resolve_cached_info_path(repo_id: str, root: str | Path | None = None) -> Path | None:
+    """Return the first existing info.json path for a repo within the local cache."""
+    candidates: list[Path] = []
+    if root is not None:
+        root_path = Path(root)
+        candidates.append(root_path / INFO_PATH)
+        candidates.append(root_path / repo_id / INFO_PATH)
+    candidates.append(HF_LEROBOT_HOME / repo_id / INFO_PATH)
+
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_local_repo_version(
+    repo_id: str, root: str | Path | None = None
+) -> packaging.version.Version | None:
+    """Load the dataset codebase version from a cached info.json if available."""
+    info_path = _resolve_cached_info_path(repo_id, root)
+    if info_path is None:
+        return None
+
+    try:
+        info = json.loads(info_path.read_text())
+        version_str = info.get("codebase_version")
+        if not version_str:
+            return None
+        normalized = version_str.lstrip("v")
+        return packaging.version.parse(normalized)
+    except (OSError, json.JSONDecodeError, packaging.version.InvalidVersion) as err:
+        logging.debug("Failed to read cached version for %s: %s", repo_id, err)
+        return None
+
+
+def get_repo_versions(
+    repo_id: str,
+    *,
+    root: str | Path | None = None,
+    force_cache_sync: bool = False,
+) -> list[packaging.version.Version]:
     """Returns available valid versions (branches and tags) on given repo."""
+    if not force_cache_sync:
+        local_version = _load_local_repo_version(repo_id, root)
+        if local_version is not None:
+            return [local_version]
+
     api = HfApi()
     repo_refs = api.list_repo_refs(repo_id, repo_type="dataset")
     repo_refs = [b.name for b in repo_refs.branches + repo_refs.tags]
@@ -320,7 +369,14 @@ def get_repo_versions(repo_id: str) -> list[packaging.version.Version]:
     return repo_versions
 
 
-def get_safe_version(repo_id: str, version: str | packaging.version.Version) -> str:
+def get_safe_version(
+    repo_id: str,
+    version: str | packaging.version.Version,
+    *,
+    root: str | Path | None = None,
+    force_cache_sync: bool = False,
+    raise_on_missing_version: bool = False,
+) -> str:
     """
     Returns the version if available on repo or the latest compatible one.
     Otherwise, will throw a `CompatibilityError`.
@@ -328,21 +384,22 @@ def get_safe_version(repo_id: str, version: str | packaging.version.Version) -> 
     target_version = (
         packaging.version.parse(version) if not isinstance(version, packaging.version.Version) else version
     )
-    hub_versions = get_repo_versions(repo_id)
+    hub_versions = get_repo_versions(repo_id, root=root, force_cache_sync=force_cache_sync)
 
     if not hub_versions:
-        logging.warning(f"No versions found for {repo_id}")
-        # raise RevisionNotFoundError(
-        #     f"""Your dataset must be tagged with a codebase version.
-        #     Assuming _version_ is the codebase_version value in the info.json, you can run this:
-        #     ```python
-        #     from huggingface_hub import HfApi
+        if raise_on_missing_version:
+            raise RevisionNotFoundError(
+                f"""Your dataset must be tagged with a codebase version.
+                Assuming _version_ is the codebase_version value in the info.json, you can run this:
+                ```python
+                from huggingface_hub import HfApi
 
-        #     hub_api = HfApi()
-        #     hub_api.create_tag("{repo_id}", tag="_version_", repo_type="dataset")
-        #     ```
-        #     """
-        # )
+                hub_api = HfApi()
+                hub_api.create_tag("{repo_id}", tag="_version_", repo_type="dataset")
+                ```
+                """
+            )
+        logging.warning(f"No versions found for {repo_id}")
 
     if target_version in hub_versions:
         return f"v{target_version}"

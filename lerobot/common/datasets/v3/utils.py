@@ -13,10 +13,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import contextlib
 import importlib.resources
 import json
-import logging
 from collections import deque
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -31,27 +29,34 @@ import pandas as pd
 import pyarrow.parquet as pq
 import torch
 from datasets import Dataset
-from datasets.table import embed_table_storage
 from huggingface_hub import DatasetCard, DatasetCardData, HfApi
-from huggingface_hub.errors import RevisionNotFoundError
 from PIL import Image as PILImage
-from torchvision import transforms
 
-from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.common.datasets.backward_compatibility import (
     FUTURE_MESSAGE,
-    BackwardCompatibilityError,
-    ForwardCompatibilityError,
+)
+from lerobot.common.datasets.utils import (
+    DEFAULT_FEATURES,
+)
+from lerobot.common.datasets.utils import (
+    check_version_compatibility as base_check_version_compatibility,
+)
+from lerobot.common.datasets.utils import (
+    get_repo_versions as base_get_repo_versions,
+)
+from lerobot.common.datasets.utils import (
+    get_safe_version as base_get_safe_version,
+)
+from lerobot.common.datasets.utils import (
+    is_valid_version as base_is_valid_version,
 )
 from lerobot.common.utils.constants import ACTION, OBS_ENV_STATE, OBS_STR
 from lerobot.common.utils.utils import SuppressProgressBars, is_valid_numpy_dtype_string
+from lerobot.configs.types import FeatureType, PolicyFeature
 
 DEFAULT_CHUNK_SIZE = 1000  # Max number of files per chunk
 DEFAULT_DATA_FILE_SIZE_IN_MB = 100  # Max size per file
 DEFAULT_VIDEO_FILE_SIZE_IN_MB = 500  # Max size per file
-
-INFO_PATH = "meta/info.json"
-STATS_PATH = "meta/stats.json"
 
 EPISODES_DIR = "meta/episodes"
 DATA_DIR = "data"
@@ -67,14 +72,6 @@ DEFAULT_IMAGE_PATH = "images/{image_key}/episode-{episode_index:06d}/frame-{fram
 LEGACY_EPISODES_PATH = "meta/episodes.jsonl"
 LEGACY_EPISODES_STATS_PATH = "meta/episodes_stats.jsonl"
 LEGACY_TASKS_PATH = "meta/tasks.jsonl"
-
-DEFAULT_FEATURES = {
-    "timestamp": {"dtype": "float32", "shape": (1,), "names": None},
-    "frame_index": {"dtype": "int64", "shape": (1,), "names": None},
-    "episode_index": {"dtype": "int64", "shape": (1,), "names": None},
-    "index": {"dtype": "int64", "shape": (1,), "names": None},
-    "task_index": {"dtype": "int64", "shape": (1,), "names": None},
-}
 
 T = TypeVar("T")
 
@@ -137,197 +134,6 @@ def get_file_size_in_mb(file_path: Path) -> float:
     return file_size_bytes / (1024**2)
 
 
-def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:
-    """Flatten a nested dictionary by joining keys with a separator.
-
-    Example:
-        >>> dct = {"a": {"b": 1, "c": {"d": 2}}, "e": 3}
-        >>> print(flatten_dict(dct))
-        {'a/b': 1, 'a/c/d': 2, 'e': 3}
-
-    Args:
-        d (dict): The dictionary to flatten.
-        parent_key (str): The base key to prepend to the keys in this level.
-        sep (str): The separator to use between keys.
-
-    Returns:
-        dict: A flattened dictionary.
-    """
-    items = []
-    for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
-        if isinstance(v, dict):
-            items.extend(flatten_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
-
-
-def unflatten_dict(d: dict, sep: str = "/") -> dict:
-    """Unflatten a dictionary with delimited keys into a nested dictionary.
-
-    Example:
-        >>> flat_dct = {"a/b": 1, "a/c/d": 2, "e": 3}
-        >>> print(unflatten_dict(flat_dct))
-        {'a': {'b': 1, 'c': {'d': 2}}, 'e': 3}
-
-    Args:
-        d (dict): A dictionary with flattened keys.
-        sep (str): The separator used in the keys.
-
-    Returns:
-        dict: A nested dictionary.
-    """
-    outdict = {}
-    for key, value in d.items():
-        parts = key.split(sep)
-        d = outdict
-        for part in parts[:-1]:
-            if part not in d:
-                d[part] = {}
-            d = d[part]
-        d[parts[-1]] = value
-    return outdict
-
-
-def serialize_dict(stats: dict[str, torch.Tensor | np.ndarray | dict]) -> dict:
-    """Serialize a dictionary containing tensors or numpy arrays to be JSON-compatible.
-
-    Converts torch.Tensor, np.ndarray, and np.generic types to lists or native Python types.
-
-    Args:
-        stats (dict): A dictionary that may contain non-serializable numeric types.
-
-    Returns:
-        dict: A dictionary with all values converted to JSON-serializable types.
-
-    Raises:
-        NotImplementedError: If a value has an unsupported type.
-    """
-    serialized_dict = {}
-    for key, value in flatten_dict(stats).items():
-        if isinstance(value, (torch.Tensor | np.ndarray)):
-            serialized_dict[key] = value.tolist()
-        elif isinstance(value, list) and isinstance(value[0], (int | float | list)):
-            serialized_dict[key] = value
-        elif isinstance(value, np.generic):
-            serialized_dict[key] = value.item()
-        elif isinstance(value, (int | float)):
-            serialized_dict[key] = value
-        else:
-            raise NotImplementedError(f"The value '{value}' of type '{type(value)}' is not supported.")
-    return unflatten_dict(serialized_dict)
-
-
-def embed_images(dataset: datasets.Dataset) -> datasets.Dataset:
-    """Embed image bytes into the dataset table before saving to Parquet.
-
-    This function prepares a Hugging Face dataset for serialization by converting
-    image objects into an embedded format that can be stored in Arrow/Parquet.
-
-    Args:
-        dataset (datasets.Dataset): The input dataset, possibly containing image features.
-
-    Returns:
-        datasets.Dataset: The dataset with images embedded in the table storage.
-    """
-    # Embed image bytes into the table before saving to parquet
-    format = dataset.format
-    dataset = dataset.with_format("arrow")
-    dataset = dataset.map(embed_table_storage, batched=False)
-    dataset = dataset.with_format(**format)
-    return dataset
-
-
-def load_json(fpath: Path) -> Any:
-    """Load data from a JSON file.
-
-    Args:
-        fpath (Path): Path to the JSON file.
-
-    Returns:
-        Any: The data loaded from the JSON file.
-    """
-    with open(fpath) as f:
-        return json.load(f)
-
-
-def write_json(data: dict, fpath: Path) -> None:
-    """Write data to a JSON file.
-
-    Creates parent directories if they don't exist.
-
-    Args:
-        data (dict): The dictionary to write.
-        fpath (Path): The path to the output JSON file.
-    """
-    fpath.parent.mkdir(exist_ok=True, parents=True)
-    with open(fpath, "w") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
-
-def write_info(info: dict, local_dir: Path) -> None:
-    write_json(info, local_dir / INFO_PATH)
-
-
-def load_info(local_dir: Path) -> dict:
-    """Load dataset info metadata from its standard file path.
-
-    Also converts shape lists to tuples for consistency.
-
-    Args:
-        local_dir (Path): The root directory of the dataset.
-
-    Returns:
-        dict: The dataset information dictionary.
-    """
-    info = load_json(local_dir / INFO_PATH)
-    for ft in info["features"].values():
-        ft["shape"] = tuple(ft["shape"])
-    return info
-
-
-def write_stats(stats: dict, local_dir: Path) -> None:
-    """Serialize and write dataset statistics to their standard file path.
-
-    Args:
-        stats (dict): The statistics dictionary (can contain tensors/numpy arrays).
-        local_dir (Path): The root directory of the dataset.
-    """
-    serialized_stats = serialize_dict(stats)
-    write_json(serialized_stats, local_dir / STATS_PATH)
-
-
-def cast_stats_to_numpy(stats: dict) -> dict[str, dict[str, np.ndarray]]:
-    """Recursively cast numerical values in a stats dictionary to numpy arrays.
-
-    Args:
-        stats (dict): The statistics dictionary.
-
-    Returns:
-        dict: The statistics dictionary with values cast to numpy arrays.
-    """
-    stats = {key: np.array(value) for key, value in flatten_dict(stats).items()}
-    return unflatten_dict(stats)
-
-
-def load_stats(local_dir: Path) -> dict[str, dict[str, np.ndarray]] | None:
-    """Load dataset statistics and cast numerical values to numpy arrays.
-
-    Returns None if the stats file doesn't exist.
-
-    Args:
-        local_dir (Path): The root directory of the dataset.
-
-    Returns:
-        A dictionary of statistics or None if the file is not found.
-    """
-    if not (local_dir / STATS_PATH).exists():
-        return None
-    stats = load_json(local_dir / STATS_PATH)
-    return cast_stats_to_numpy(stats)
-
-
 def write_tasks(tasks: pandas.DataFrame, local_dir: Path) -> None:
     path = local_dir / DEFAULT_TASKS_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -370,71 +176,7 @@ def load_episodes(local_dir: Path) -> datasets.Dataset:
     return episodes
 
 
-def load_image_as_numpy(
-    fpath: str | Path, dtype: np.dtype = np.float32, channel_first: bool = True
-) -> np.ndarray:
-    """Load an image from a file into a numpy array.
-
-    Args:
-        fpath (str | Path): Path to the image file.
-        dtype (np.dtype): The desired data type of the output array. If floating,
-            pixels are scaled to [0, 1].
-        channel_first (bool): If True, converts the image to (C, H, W) format.
-            Otherwise, it remains in (H, W, C) format.
-
-    Returns:
-        np.ndarray: The image as a numpy array.
-    """
-    img = PILImage.open(fpath).convert("RGB")
-    img_array = np.array(img, dtype=dtype)
-    if channel_first:  # (H, W, C) -> (C, H, W)
-        img_array = np.transpose(img_array, (2, 0, 1))
-    if np.issubdtype(dtype, np.floating):
-        img_array /= 255.0
-    return img_array
-
-
-def hf_transform_to_torch(items_dict: dict[str, list[Any]]) -> dict[str, list[torch.Tensor | str]]:
-    """Convert a batch from a Hugging Face dataset to torch tensors.
-
-    This transform function converts items from Hugging Face dataset format (pyarrow)
-    to torch tensors. Importantly, images are converted from PIL objects (H, W, C, uint8)
-    to a torch image representation (C, H, W, float32) in the range [0, 1]. Other
-    types are converted to torch.tensor.
-
-    Args:
-        items_dict (dict): A dictionary representing a batch of data from a
-            Hugging Face dataset.
-
-    Returns:
-        dict: The batch with items converted to torch tensors.
-    """
-    for key in items_dict:
-        first_item = items_dict[key][0]
-        if isinstance(first_item, PILImage.Image):
-            to_tensor = transforms.ToTensor()
-            items_dict[key] = [to_tensor(img) for img in items_dict[key]]
-        elif first_item is None:
-            pass
-        else:
-            items_dict[key] = [x if isinstance(x, str) else torch.tensor(x) for x in items_dict[key]]
-    return items_dict
-
-
-def is_valid_version(version: str) -> bool:
-    """Check if a string is a valid PEP 440 version.
-
-    Args:
-        version (str): The version string to check.
-
-    Returns:
-        bool: True if the version string is valid, False otherwise.
-    """
-    try:
-        packaging.version.parse(version)
-        return True
-    except packaging.version.InvalidVersion:
-        return False
+is_valid_version = base_is_valid_version
 
 
 def check_version_compatibility(
@@ -443,109 +185,34 @@ def check_version_compatibility(
     current_version: str | packaging.version.Version,
     enforce_breaking_major: bool = True,
 ) -> None:
-    """Check for version compatibility between a dataset and the current codebase.
-
-    Args:
-        repo_id (str): The repository ID for logging purposes.
-        version_to_check (str | packaging.version.Version): The version of the dataset.
-        current_version (str | packaging.version.Version): The current version of the codebase.
-        enforce_breaking_major (bool): If True, raise an error on major version mismatch.
-
-    Raises:
-        BackwardCompatibilityError: If the dataset version is from a newer, incompatible
-            major version of the codebase.
-    """
-    v_check = (
-        packaging.version.parse(version_to_check)
-        if not isinstance(version_to_check, packaging.version.Version)
-        else version_to_check
+    """Check for version compatibility between a dataset and the current codebase."""
+    base_check_version_compatibility(
+        repo_id,
+        version_to_check,
+        current_version,
+        enforce_breaking_major=enforce_breaking_major,
+        future_message=FUTURE_MESSAGE,
     )
-    v_current = (
-        packaging.version.parse(current_version)
-        if not isinstance(current_version, packaging.version.Version)
-        else current_version
+
+
+get_repo_versions = base_get_repo_versions
+
+
+def get_safe_version(
+    repo_id: str,
+    version: str | packaging.version.Version,
+    *,
+    root: str | Path | None = None,
+    force_cache_sync: bool = False,
+) -> str:
+    """Return the specified version if available on repo, or the latest compatible one."""
+    return base_get_safe_version(
+        repo_id,
+        version,
+        root=root,
+        force_cache_sync=force_cache_sync,
+        raise_on_missing_version=True,
     )
-    if v_check.major < v_current.major and enforce_breaking_major:
-        raise BackwardCompatibilityError(repo_id, v_check)
-    elif v_check.minor < v_current.minor:
-        logging.warning(FUTURE_MESSAGE.format(repo_id=repo_id, version=v_check))
-
-
-def get_repo_versions(repo_id: str) -> list[packaging.version.Version]:
-    """Return available valid versions (branches and tags) on a given Hub repo.
-
-    Args:
-        repo_id (str): The repository ID on the Hugging Face Hub.
-
-    Returns:
-        list[packaging.version.Version]: A list of valid versions found.
-    """
-    api = HfApi()
-    repo_refs = api.list_repo_refs(repo_id, repo_type="dataset")
-    repo_refs = [b.name for b in repo_refs.branches + repo_refs.tags]
-    repo_versions = []
-    for ref in repo_refs:
-        with contextlib.suppress(packaging.version.InvalidVersion):
-            repo_versions.append(packaging.version.parse(ref))
-
-    return repo_versions
-
-
-def get_safe_version(repo_id: str, version: str | packaging.version.Version) -> str:
-    """Return the specified version if available on repo, or the latest compatible one.
-
-    If the exact version is not found, it looks for the latest version with the
-    same major version number that is less than or equal to the target minor version.
-
-    Args:
-        repo_id (str): The repository ID on the Hugging Face Hub.
-        version (str | packaging.version.Version): The target version.
-
-    Returns:
-        str: The safe version string (e.g., "v1.2.3") to use as a revision.
-
-    Raises:
-        RevisionNotFoundError: If the repo has no version tags.
-        BackwardCompatibilityError: If only older major versions are available.
-        ForwardCompatibilityError: If only newer major versions are available.
-    """
-    target_version = (
-        packaging.version.parse(version) if not isinstance(version, packaging.version.Version) else version
-    )
-    hub_versions = get_repo_versions(repo_id)
-
-    if not hub_versions:
-        raise RevisionNotFoundError(
-            f"""Your dataset must be tagged with a codebase version.
-            Assuming _version_ is the codebase_version value in the info.json, you can run this:
-            ```python
-            from huggingface_hub import HfApi
-
-            hub_api = HfApi()
-            hub_api.create_tag("{repo_id}", tag="_version_", repo_type="dataset")
-            ```
-            """
-        )
-
-    if target_version in hub_versions:
-        return f"v{target_version}"
-
-    compatibles = [
-        v for v in hub_versions if v.major == target_version.major and v.minor <= target_version.minor
-    ]
-    if compatibles:
-        return_version = max(compatibles)
-        if return_version < target_version:
-            logging.warning(f"Revision {version} for {repo_id} not found, using version v{return_version}")
-        return f"v{return_version}"
-
-    lower_major = [v for v in hub_versions if v.major < target_version.major]
-    if lower_major:
-        raise BackwardCompatibilityError(repo_id, max(lower_major))
-
-    upper_versions = [v for v in hub_versions if v > target_version]
-    assert len(upper_versions) > 0
-    raise ForwardCompatibilityError(repo_id, min(upper_versions))
 
 
 def get_hf_features_from_features(features: dict) -> datasets.Features:

@@ -19,17 +19,16 @@ from pathlib import Path
 from pprint import pformat
 from typing import Any
 
+import torch
 from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate.scheduler import AcceleratedScheduler
 from accelerate.utils import DistributedDataParallelKwargs, TorchDynamoPlugin
 from termcolor import colored
-import torch
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 
 from lerobot.common.constants import CHECKPOINTS_DIR
 from lerobot.common.datasets.factory import make_dataset
-from lerobot.common.datasets.lerobot_dataset import MultiLeRobotDataset
 from lerobot.common.datasets.sampler import EpisodeAwareSampler
 from lerobot.common.envs.factory import make_env
 from lerobot.common.envs.utils import close_envs
@@ -161,10 +160,13 @@ def train(cfg: TrainPipelineConfig):
         dataset = make_dataset(cfg)
 
     accelerator.wait_for_everyone()
+    logging.info("Dataset created by main process")
 
     # Now all other processes can safely load the dataset
     if not accelerator.is_main_process:
         dataset = make_dataset(cfg)
+    accelerator.wait_for_everyone()
+    logging.info("Dataset created")
 
     eval_env = None
     if cfg.eval_freq > 0 and cfg.env is not None and accelerator.is_main_process:
@@ -243,11 +245,9 @@ def train(cfg: TrainPipelineConfig):
 
     policy.train()
     # Note that accelerator prepare will skip compiling the policy if it is already compiled
-    policy.model, optimizer, dataloader = accelerator.prepare(
-        policy.model, optimizer, dataloader
-    )
+    policy.model, optimizer, dataloader = accelerator.prepare(policy.model, optimizer, dataloader)
     lr_scheduler: AcceleratedScheduler = accelerator.prepare(lr_scheduler)
-    lr_scheduler.step_with_optimizer = False  # so that the lr scheduler is only called once per process. 
+    lr_scheduler.step_with_optimizer = False  # so that the lr scheduler is only called once per process.
     policy.to(device)
 
     train_metrics = {
@@ -268,7 +268,7 @@ def train(cfg: TrainPipelineConfig):
         initial_step=step,
     )
     accelerator.register_for_checkpointing(train_tracker)
-    
+
     # Resume training after accelerator.prepare() if needed
     if cfg.resume:
         try:
@@ -280,8 +280,10 @@ def train(cfg: TrainPipelineConfig):
             logging.info(f"resume error: {e}")
             raise e
         accelerator.wait_for_everyone()
-        
-    skipped_dataloader = accelerator.skip_first_batches(dataloader, ((train_tracker.samples//cfg.batch_size)//accelerator.num_processes)% len(dataloader))
+
+    skipped_dataloader = accelerator.skip_first_batches(
+        dataloader, ((train_tracker.samples // cfg.batch_size) // accelerator.num_processes) % len(dataloader)
+    )
 
     logging.info("Start offline training on a fixed dataset")
     # Track actual optimization steps (not batch steps)
@@ -295,7 +297,7 @@ def train(cfg: TrainPipelineConfig):
             current_dataloader = skipped_dataloader
         else:
             current_dataloader = dataloader
-            
+
         for batch_idx, batch in enumerate(current_dataloader):
             # Accelerator handles gradient accumulation, so we track actual optimization steps
             # Each batch corresponds to one forward pass, but optimization happens every gradient_accumulation_steps
@@ -344,9 +346,8 @@ def train(cfg: TrainPipelineConfig):
                 global_opt_step = current_opt_step + 1
                 is_log_step = cfg.log_freq > 0 and global_opt_step % cfg.log_freq == 0
                 is_saving_step = (
-                    (cfg.save_freq > 0 and global_opt_step % cfg.save_freq == 0)
-                    or global_opt_step == cfg.steps
-                )
+                    cfg.save_freq > 0 and global_opt_step % cfg.save_freq == 0
+                ) or global_opt_step == cfg.steps
                 is_eval_step = cfg.eval_freq > 0 and global_opt_step % cfg.eval_freq == 0
 
             if is_log_step:

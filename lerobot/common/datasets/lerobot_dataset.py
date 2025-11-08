@@ -111,7 +111,12 @@ class LeRobotDatasetMetadata(DatasetMetadataAccessorsMixin):
             self.load_metadata()
         except (FileNotFoundError, NotADirectoryError):
             if is_valid_version(self.revision):
-                self.revision = get_safe_version(self.repo_id, self.revision)
+                self.revision = get_safe_version(
+                    self.repo_id,
+                    self.revision,
+                    root=self.root,
+                    force_cache_sync=force_cache_sync,
+                )
 
             (self.root / "meta").mkdir(exist_ok=True, parents=True)
             self.pull_from_repo(allow_patterns="meta/")
@@ -443,7 +448,12 @@ class LeRobotDataset(DatasetCommonMixin, torch.utils.data.Dataset):
             assert all((self.root / fpath).is_file() for fpath in self.get_episodes_file_paths())
             self.hf_dataset = self.load_hf_dataset()
         except (AssertionError, FileNotFoundError, NotADirectoryError):
-            self.revision = get_safe_version(self.repo_id, self.revision)
+            self.revision = get_safe_version(
+                self.repo_id,
+                self.revision,
+                root=self.root,
+                force_cache_sync=force_cache_sync,
+            )
             self.download_episodes(download_videos)
             self.hf_dataset = self.load_hf_dataset()
 
@@ -1053,6 +1063,7 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
                     force_cache_sync=force_cache_sync,
                 )
             except BackwardCompatibilityError:
+                breakpoint()
                 logging.info("Detected legacy dataset for %s; falling back to v2 loader.", repo_id)
 
         return LeRobotDataset(
