@@ -91,6 +91,10 @@ from lerobot.common.robot_devices.robots.utils import Robot
 CODEBASE_VERSION = "v2.1"
 
 
+class MissingAnnotatedTasksError(FileNotFoundError):
+    """Raised when annotated tasks are requested but the annotations file is missing."""
+
+
 class LeRobotDatasetMetadata(DatasetMetadataAccessorsMixin):
     def __init__(
         self,
@@ -123,15 +127,15 @@ class LeRobotDatasetMetadata(DatasetMetadataAccessorsMixin):
             self.load_metadata()
 
         if self.use_annotated_tasks:
-            try:
-                self.load_annotated_tasks()
-            except FileNotFoundError:
-                logging.warning("No annotated tasks found for this dataset.")
+            self.load_annotated_tasks()
 
     def load_annotated_tasks(self):
         safe_repo_id = self.repo_id.replace("/", "_")
         safe_repo_id = Path(safe_repo_id)
-        self.annotated_tasks = load_json("so100_data/annotations" / safe_repo_id / "annotations.json")
+        annotation_file = Path("so100_data/annotations") / safe_repo_id / "annotations.json"
+        if not annotation_file.exists():
+            raise MissingAnnotatedTasksError(f"Annotated tasks file not found: {annotation_file}")
+        self.annotated_tasks = load_json(annotation_file)
         self.annotated_tasks = {
             task["episode_index"]: task["improved_instruction"]
             if len(task["improved_instruction"]) > len(task["original_instruction"])
@@ -678,13 +682,11 @@ class LeRobotDataset(DatasetCommonMixin, torch.utils.data.Dataset):
                     item[cam] = self.image_transforms(item[cam])
 
             # Add task as a string
-            if not self.use_annotated_tasks or not hasattr(self.meta, "annotated_tasks"):
-                if self.use_annotated_tasks and not hasattr(self.meta, "annotated_tasks"):
-                    logging.warning("No annotated tasks found for this dataset.")
+            if self.use_annotated_tasks:
+                item["task"] = self.meta.annotated_tasks[ep_idx]
+            else:
                 task_idx = item["task_index"].item()
                 item["task"] = self.meta.tasks[task_idx]
-            else:
-                item["task"] = self.meta.annotated_tasks[ep_idx]
 
             return item
         except Exception as e:
@@ -998,6 +1000,13 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
                 self._datasets.append(dataset)
                 self.repo_ids.append(repo_id)
                 logging.info(f"Loaded dataset {repo_id}")
+            except MissingAnnotatedTasksError as exc:
+                logging.warning(
+                    "Skipping dataset %s because annotated tasks are missing: %s",
+                    repo_id,
+                    exc,
+                )
+                continue
             except Exception as e:
                 logging.warning(f"Failed to load dataset {repo_id}: {e}")
                 logging.warning(f"Traceback for {repo_id}:\n{traceback.format_exc()}")
@@ -1063,7 +1072,6 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
                     force_cache_sync=force_cache_sync,
                 )
             except BackwardCompatibilityError:
-                breakpoint()
                 logging.info("Detected legacy dataset for %s; falling back to v2 loader.", repo_id)
 
         return LeRobotDataset(
