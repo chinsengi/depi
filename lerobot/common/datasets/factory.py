@@ -25,6 +25,7 @@ from data_ids.filter_so100_data import get_repo_ids
 from lerobot.common.datasets.lerobot_dataset import (
     LeRobotDataset,
     LeRobotDatasetMetadata,
+    MissingAnnotatedTasksError,
     MultiLeRobotDataset,
 )
 from lerobot.common.datasets.lerobot_dataset_v3 import (
@@ -203,6 +204,14 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         for repo_id in tqdm(repo_ids, desc="Processing datasets metadata"):
             try:
                 delta_timestamps = load_delta_timestamps(repo_id, cfg)
+            except MissingAnnotatedTasksError as exc:
+                logging.warning(
+                    "Skipping dataset %s because annotated tasks are missing: %s",
+                    repo_id,
+                    exc,
+                )
+                skipped_repo_ids.append(repo_id)
+                continue
             except Exception as e:
                 logging.warning(
                     "Skipping dataset %s because delta timestamps could not be loaded: %s",
