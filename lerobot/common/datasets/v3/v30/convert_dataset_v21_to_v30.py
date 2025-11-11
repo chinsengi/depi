@@ -56,6 +56,10 @@ from datasets import Dataset, Features, Image
 from huggingface_hub import HfApi, snapshot_download
 from requests import HTTPError
 
+from lerobot.common.datasets.video_utils import concatenate_video_files, get_video_duration_in_s
+from lerobot.common.utils.constants import HF_LEROBOT_HOME
+from lerobot.common.utils.utils import init_logging
+
 from .compute_stats import aggregate_stats
 from .lerobot_dataset import CODEBASE_VERSION_V3, LeRobotDatasetV3
 from .utils import (
@@ -79,9 +83,6 @@ from .utils import (
     write_stats,
     write_tasks,
 )
-from .video_utils import concatenate_video_files, get_video_duration_in_s
-from lerobot.common.utils.constants import HF_LEROBOT_HOME
-from lerobot.common.utils.utils import init_logging
 
 V21 = "v2.1"
 V30 = "v3.0"

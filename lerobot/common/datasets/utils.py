@@ -366,6 +366,14 @@ def get_repo_versions(
         with contextlib.suppress(packaging.version.InvalidVersion):
             repo_versions.append(packaging.version.parse(ref))
 
+    if len(repo_versions) == 0:
+        info_path = api.hf_hub_download(repo_id, INFO_PATH, repo_type="dataset")
+        with open(info_path) as f:
+            info = json.load(f)
+        version_str = info.get("codebase_version")
+        if version_str:
+            normalized = version_str.lstrip("v")
+            repo_versions.append(packaging.version.parse(normalized))
     return repo_versions
 
 

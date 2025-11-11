@@ -40,29 +40,43 @@ from lerobot.common.datasets._shared_mixins import (
     DatasetCommonMixin,
     DatasetMetadataAccessorsMixin,
 )
-from lerobot.common.datasets.backward_compatibility import BackwardCompatibilityError
-from lerobot.common.datasets.v3 import utils as v3_utils
+from lerobot.common.datasets.exceptions import MissingAnnotatedTasksError
+from lerobot.common.datasets.utils import (
+    DEFAULT_FEATURES,
+    INFO_PATH,
+    check_version_compatibility,
+    embed_images,
+    flatten_dict,
+    hf_transform_to_torch,
+    load_info,
+    load_json,
+    load_stats,
+    write_info,
+    write_json,
+    write_stats,
+)
 from lerobot.common.datasets.v3.compute_stats import aggregate_stats, compute_episode_stats
 from lerobot.common.datasets.v3.utils import (
     DEFAULT_EPISODES_PATH,
     DEFAULT_IMAGE_PATH,
+    _validate_feature_names,
     check_delta_timestamps,
+    create_empty_dataset_info,
     create_lerobot_dataset_card,
-    embed_images,
     get_delta_indices,
     get_file_size_in_mb,
     get_hf_features_from_features,
     get_safe_version,
-    hf_transform_to_torch,
     is_valid_version,
     load_episodes,
     load_nested_dataset,
+    load_tasks,
     update_chunk_file_indices,
     validate_episode_buffer,
     validate_frame,
-    write_info,
+    write_tasks,
 )
-from lerobot.common.datasets.v3.video_utils import (
+from lerobot.common.datasets.video_utils import (
     concatenate_video_files,
     decode_video_frames,
     encode_video_frames,
@@ -82,6 +96,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
     revision: str | None = None
     force_cache_sync: bool = False
     metadata_buffer_size: int = 10
+    use_annotated_tasks: bool = False
 
     writer: pq.ParquetWriter | None = field(init=False, default=None)
     latest_episode: dict | None = field(init=False, default=None)
@@ -90,6 +105,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
     episodes: list | None = field(init=False, default=None)
     stats: dict | None = field(init=False, default=None)
     info: dict = field(init=False, default_factory=dict)
+    annotated_tasks: dict[int, str] | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root) if self.root is not None else HF_LEROBOT_HOME / self.repo_id
@@ -100,8 +116,8 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
                 raise FileNotFoundError
             self.load_metadata()
         except (FileNotFoundError, NotADirectoryError):
-            if v3_utils.is_valid_version(self.revision):
-                self.revision = v3_utils.get_safe_version(
+            if is_valid_version(self.revision):
+                self.revision = get_safe_version(
                     self.repo_id,
                     self.revision,
                     root=self.root,
@@ -111,6 +127,9 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
             (self.root / "meta").mkdir(exist_ok=True, parents=True)
             self.pull_from_repo(allow_patterns="meta/")
             self.load_metadata()
+
+        if self.use_annotated_tasks:
+            self.load_annotated_tasks()
 
     def _flush_metadata_buffer(self) -> None:
         """Write all buffered episode metadata to parquet file."""
@@ -132,9 +151,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
         table = pa.Table.from_pydict(combined_dict)
 
         if not self.writer:
-            path = Path(
-                self.root / v3_utils.DEFAULT_EPISODES_PATH.format(chunk_index=chunk_idx, file_index=file_idx)
-            )
+            path = Path(self.root / DEFAULT_EPISODES_PATH.format(chunk_index=chunk_idx, file_index=file_idx))
             path.parent.mkdir(parents=True, exist_ok=True)
             self.writer = pq.ParquetWriter(
                 path, schema=table.schema, compression="snappy", use_dictionary=True
@@ -158,11 +175,24 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
         self._close_writer()
 
     def load_metadata(self) -> None:
-        self.info = v3_utils.load_info(self.root)
-        v3_utils.check_version_compatibility(self.repo_id, self._version, CODEBASE_VERSION_V3)
-        self.tasks = v3_utils.load_tasks(self.root)
-        self.episodes = v3_utils.load_episodes(self.root)
-        self.stats = v3_utils.load_stats(self.root)
+        self.info = load_info(self.root)
+        check_version_compatibility(self.repo_id, self._version, CODEBASE_VERSION_V3)
+        self.tasks = load_tasks(self.root)
+        self.episodes = load_episodes(self.root)
+        self.stats = load_stats(self.root)
+
+    def load_annotated_tasks(self) -> None:
+        safe_repo_id = Path(self.repo_id.replace("/", "_"))
+        annotation_file = Path("so100_data/annotations") / safe_repo_id / "annotations.json"
+        if not annotation_file.exists():
+            raise MissingAnnotatedTasksError(f"Annotated tasks file not found: {annotation_file}")
+        annotations = load_json(annotation_file)
+        self.annotated_tasks = {
+            task["episode_index"]: task["improved_instruction"]
+            if len(task["improved_instruction"]) > len(task["original_instruction"])
+            else task["original_instruction"]
+            for task in annotations["annotations"]
+        }
 
     @property
     def url_root(self) -> str:
@@ -175,7 +205,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
 
     def get_data_file_path(self, ep_index: int) -> Path:
         if self.episodes is None:
-            self.episodes = v3_utils.load_episodes(self.root)
+            self.episodes = load_episodes(self.root)
         if ep_index >= len(self.episodes):
             raise IndexError(
                 f"Episode index {ep_index} out of range. Episodes: {len(self.episodes) if self.episodes else 0}"
@@ -189,7 +219,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
 
     def get_video_file_path(self, ep_index: int, vid_key: str) -> Path:
         if self.episodes is None:
-            self.episodes = v3_utils.load_episodes(self.root)
+            self.episodes = load_episodes(self.root)
         if ep_index >= len(self.episodes):
             raise IndexError(
                 f"Episode index {ep_index} out of range. Episodes: {len(self.episodes) if self.episodes else 0}"
@@ -239,7 +269,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
                 self.tasks.loc[task] = task_idx
 
         if len(new_tasks) > 0:
-            v3_utils.write_tasks(self.tasks, self.root)
+            write_tasks(self.tasks, self.root)
 
     def _save_episode_metadata(self, episode_dict: dict) -> None:
         """Buffer episode metadata and write to parquet in batches for efficiency.
@@ -265,9 +295,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
                 latest_num_frames = self.episodes[-1]["dataset_to_index"]
                 episode_dict["dataset_from_index"] = [latest_num_frames]
                 episode_dict["dataset_to_index"] = [latest_num_frames + num_frames]
-                chunk_idx, file_idx = v3_utils.update_chunk_file_indices(
-                    chunk_idx, file_idx, self.chunks_size
-                )
+                chunk_idx, file_idx = update_chunk_file_indices(chunk_idx, file_idx, self.chunks_size)
             else:
                 episode_dict["dataset_from_index"] = [0]
                 episode_dict["dataset_to_index"] = [num_frames]
@@ -279,22 +307,20 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
             file_idx = self.latest_episode["meta/episodes/file_index"][0]
 
             latest_path = (
-                self.root / v3_utils.DEFAULT_EPISODES_PATH.format(chunk_index=chunk_idx, file_index=file_idx)
+                self.root / DEFAULT_EPISODES_PATH.format(chunk_index=chunk_idx, file_index=file_idx)
                 if self.writer is None
                 else self.writer.where
             )
 
             if Path(latest_path).exists():
-                latest_size_in_mb = v3_utils.get_file_size_in_mb(Path(latest_path))
+                latest_size_in_mb = get_file_size_in_mb(Path(latest_path))
                 latest_num_frames = self.latest_episode["episode_index"][0]
 
                 av_size_per_frame = latest_size_in_mb / latest_num_frames if latest_num_frames > 0 else 0.0
 
                 if latest_size_in_mb + av_size_per_frame * num_frames >= self.data_files_size_in_mb:
                     self._flush_metadata_buffer()
-                    chunk_idx, file_idx = v3_utils.update_chunk_file_indices(
-                        chunk_idx, file_idx, self.chunks_size
-                    )
+                    chunk_idx, file_idx = update_chunk_file_indices(chunk_idx, file_idx, self.chunks_size)
                     self._close_writer()
 
             episode_dict["meta/episodes/chunk_index"] = [chunk_idx]
@@ -316,7 +342,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
         episode_stats: dict[str, dict],
         episode_metadata: dict,
     ) -> None:
-        self.episodes = v3_utils.load_episodes(self.root)
+        self.episodes = load_episodes(self.root)
 
         episode_dict = {
             "episode_index": episode_index,
@@ -324,7 +350,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
             "length": episode_length,
         }
         episode_dict.update(episode_metadata)
-        episode_dict.update(v3_utils.flatten_dict({"stats": episode_stats}))
+        episode_dict.update(flatten_dict({"stats": episode_stats}))
         self._save_episode_metadata(episode_dict)
 
         self.info["total_episodes"] += 1
@@ -332,10 +358,10 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
         self.info["total_tasks"] = len(self.tasks)
         self.info["splits"] = {"train": f"0:{self.info['total_episodes']}"}
 
-        v3_utils.write_info(self.info, self.root)
+        write_info(self.info, self.root)
 
         self.stats = aggregate_stats([self.stats, episode_stats]) if self.stats is not None else episode_stats
-        v3_utils.write_stats(self.stats, self.root)
+        write_stats(self.stats, self.root)
 
     def update_video_info(self, video_key: str | None = None) -> None:
         """
@@ -383,7 +409,7 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
                 raise ValueError(f"video_files_size_in_mb must be positive, got {video_files_size_in_mb}")
             self.info["video_files_size_in_mb"] = video_files_size_in_mb
 
-        v3_utils.write_info(self.info, self.root)
+        write_info(self.info, self.root)
 
     def get_chunk_settings(self) -> dict[str, int]:
         """Get current chunk and file size settings.
@@ -417,13 +443,13 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
 
         obj.root.mkdir(parents=True, exist_ok=False)
 
-        features = {**features, **v3_utils.DEFAULT_FEATURES}
-        v3_utils._validate_feature_names(features)
+        features = {**features, **DEFAULT_FEATURES}
+        _validate_feature_names(features)
 
         obj.tasks = None
         obj.episodes = None
         obj.stats = None
-        obj.info = v3_utils.create_empty_dataset_info(
+        obj.info = create_empty_dataset_info(
             CODEBASE_VERSION_V3,
             fps,
             features,
@@ -435,13 +461,15 @@ class LeRobotDatasetMetadataV3(DatasetMetadataAccessorsMixin):
         )
         if len(obj.video_keys) > 0 and not use_videos:
             raise ValueError("Features include videos but use_videos is False")
-        v3_utils.write_json(obj.info, obj.root / v3_utils.INFO_PATH)
+        write_json(obj.info, obj.root / INFO_PATH)
         obj.revision = None
         obj.writer = None
         obj.latest_episode = None
         obj.metadata_buffer = []
         obj.metadata_buffer_size = metadata_buffer_size
         obj.force_cache_sync = False
+        obj.use_annotated_tasks = False
+        obj.annotated_tasks = None
         return obj
 
 
@@ -459,6 +487,7 @@ class LeRobotDatasetV3(DatasetCommonMixin, torch.utils.data.Dataset):
         download_videos: bool = True,
         video_backend: str | None = None,
         batch_encoding_size: int = 1,
+        use_annotated_tasks: bool = False,
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
@@ -571,6 +600,8 @@ class LeRobotDatasetV3(DatasetCommonMixin, torch.utils.data.Dataset):
                 You can also use the 'pyav' decoder used by Torchvision, which used to be the default option, or 'video_reader' which is another decoder of Torchvision.
             batch_encoding_size (int, optional): Number of episodes to accumulate before batch encoding videos.
                 Set to 1 for immediate encoding (default), or higher for batched encoding. Defaults to 1.
+            use_annotated_tasks (bool, optional): Flag to load external annotated instructions and return them
+                instead of dataset tasks. Defaults to False.
         """
         super().__init__()
         self.repo_id = repo_id
@@ -583,6 +614,7 @@ class LeRobotDatasetV3(DatasetCommonMixin, torch.utils.data.Dataset):
         self.video_backend = video_backend if video_backend else get_safe_default_codec()
         self.delta_indices = None
         self.batch_encoding_size = batch_encoding_size
+        self.use_annotated_tasks = use_annotated_tasks
         self.episodes_since_last_encoding = 0
 
         # Unused attributes
@@ -596,7 +628,11 @@ class LeRobotDatasetV3(DatasetCommonMixin, torch.utils.data.Dataset):
 
         # Load metadata
         self.meta = LeRobotDatasetMetadataV3(
-            self.repo_id, self.root, self.revision, force_cache_sync=force_cache_sync
+            self.repo_id,
+            self.root,
+            self.revision,
+            force_cache_sync=force_cache_sync,
+            use_annotated_tasks=use_annotated_tasks,
         )
 
         # Track dataset state for efficient incremental writing
@@ -896,8 +932,15 @@ class LeRobotDatasetV3(DatasetCommonMixin, torch.utils.data.Dataset):
                 item[cam] = self.image_transforms(item[cam])
 
         # Add task as a string
-        task_idx = item["task_index"].item()
-        item["task"] = self.meta.tasks.iloc[task_idx].name
+        if self.use_annotated_tasks:
+            if self.meta.annotated_tasks is None:
+                raise MissingAnnotatedTasksError(
+                    f"Annotated tasks requested for {self.repo_id} but annotation metadata was not loaded."
+                )
+            item["task"] = self.meta.annotated_tasks[ep_idx]
+        else:
+            task_idx = item["task_index"].item()
+            item["task"] = self.meta.tasks.iloc[task_idx].name
         return item
 
     def __repr__(self):
@@ -1311,6 +1354,7 @@ class LeRobotDatasetV3(DatasetCommonMixin, torch.utils.data.Dataset):
         obj.tolerance_s = tolerance_s
         obj.image_writer = None
         obj.batch_encoding_size = batch_encoding_size
+        obj.use_annotated_tasks = False
         obj.episodes_since_last_encoding = 0
 
         if image_writer_processes or image_writer_threads:
@@ -1333,58 +1377,3 @@ class LeRobotDatasetV3(DatasetCommonMixin, torch.utils.data.Dataset):
         obj._recorded_frames = 0
         obj._writer_closed_for_reading = False
         return obj
-
-
-def _load_dataset_version_aware(
-    repo_id: str,
-    *,
-    root: Path,
-    episodes: list[int] | None,
-    image_transforms: Callable | None,
-    delta_timestamps: dict[str, list[float]] | None,
-    tolerance_s: float,
-    download_videos: bool,
-    video_backend: str | None,
-    force_cache_sync: bool = False,
-    use_annotated_tasks: bool = False,
-) -> torch.utils.data.Dataset:
-    """
-    Instantiate a LeRobot dataset, automatically selecting the implementation that
-    matches the dataset's codebase version.
-    """
-    try:
-        return LeRobotDatasetV3(
-            repo_id,
-            root=root,
-            episodes=episodes,
-            image_transforms=image_transforms,
-            delta_timestamps=delta_timestamps,
-            tolerance_s=tolerance_s,
-            download_videos=download_videos,
-            video_backend=video_backend,
-            force_cache_sync=force_cache_sync,
-        )
-    except BackwardCompatibilityError:
-        from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetV2
-
-        logging.info("Detected v2.x dataset format for %s; falling back to LeRobotDatasetV2.", repo_id)
-        return LeRobotDatasetV2(
-            repo_id,
-            root=root,
-            episodes=episodes,
-            image_transforms=image_transforms,
-            delta_timestamps=delta_timestamps,
-            tolerance_s=tolerance_s,
-            download_videos=download_videos,
-            video_backend=video_backend,
-            force_cache_sync=force_cache_sync,
-            use_annotated_tasks=use_annotated_tasks,
-        )
-
-
-from lerobot.common.datasets.lerobot_dataset import MultiLeRobotDataset as _UnifiedMultiLeRobotDataset
-
-MultiLeRobotDataset = _UnifiedMultiLeRobotDataset
-MultiLeRobotDatasetV3 = _UnifiedMultiLeRobotDataset
-# Backward-compatible alias to preserve the previous public class name.
-LeRobotDataset = LeRobotDatasetV3

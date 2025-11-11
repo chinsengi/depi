@@ -23,7 +23,6 @@ import logging
 import shutil
 import traceback
 from bisect import bisect_right
-from importlib import import_module
 from pathlib import Path
 from typing import Callable
 
@@ -46,6 +45,8 @@ from lerobot.common.datasets._shared_mixins import (
 )
 from lerobot.common.datasets.backward_compatibility import BackwardCompatibilityError
 from lerobot.common.datasets.compute_stats import aggregate_stats, compute_episode_stats
+from lerobot.common.datasets.exceptions import MissingAnnotatedTasksError
+from lerobot.common.datasets.lerobot_dataset_v3 import LeRobotDatasetV3
 from lerobot.common.datasets.utils import (
     DEFAULT_FEATURES,
     DEFAULT_IMAGE_PATH,
@@ -89,10 +90,6 @@ from lerobot.common.datasets.video_utils import (
 from lerobot.common.robot_devices.robots.utils import Robot
 
 CODEBASE_VERSION = "v2.1"
-
-
-class MissingAnnotatedTasksError(FileNotFoundError):
-    """Raised when annotated tasks are requested but the annotations file is missing."""
 
 
 class LeRobotDatasetMetadata(DatasetMetadataAccessorsMixin):
@@ -1014,6 +1011,7 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         assert len(self.repo_ids) == len(self._datasets), (
             f"repo_ids and datasets length mismatch: len(self.repo_ids) = {len(self.repo_ids)}, len(self._datasets) = {len(self._datasets)}"
         )
+        logging.info(f"Successfully loaded {len(self._datasets)} datasets.")
         # Disable any data keys that are not common across all of the datasets. Note: we may relax this
         # restriction in future iterations of this class. For now, this is necessary at least for being able
         # to use PyTorch's default DataLoader collate function.
@@ -1052,27 +1050,22 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         use_annotated_tasks: bool,
     ) -> torch.utils.data.Dataset:
         """Instantiate a dataset, automatically selecting v2 or v3 implementation."""
-        try:
-            v3_module = import_module("lerobot.common.datasets.lerobot_dataset_v3")
-            lerobot_dataset_v3_cls = v3_module.LeRobotDatasetV3
-        except (ModuleNotFoundError, AttributeError) as err:
-            raise ModuleNotFoundError("LeRobotDatasetV3 is not available in this installation.") from err
 
-        if lerobot_dataset_v3_cls is not None:
-            try:
-                return lerobot_dataset_v3_cls(
-                    repo_id,
-                    root=root,
-                    episodes=episodes,
-                    image_transforms=image_transforms,
-                    delta_timestamps=delta_timestamps,
-                    tolerance_s=tolerance_s,
-                    download_videos=download_videos,
-                    video_backend=video_backend,
-                    force_cache_sync=force_cache_sync,
-                )
-            except BackwardCompatibilityError:
-                logging.info("Detected legacy dataset for %s; falling back to v2 loader.", repo_id)
+        try:
+            return LeRobotDatasetV3(
+                repo_id,
+                root=root,
+                episodes=episodes,
+                image_transforms=image_transforms,
+                delta_timestamps=delta_timestamps,
+                tolerance_s=tolerance_s,
+                download_videos=download_videos,
+                video_backend=video_backend,
+                force_cache_sync=force_cache_sync,
+                use_annotated_tasks=use_annotated_tasks,
+            )
+        except BackwardCompatibilityError:
+            logging.info("Detected legacy dataset for %s; falling back to v2 loader.", repo_id)
 
         return LeRobotDataset(
             repo_id,

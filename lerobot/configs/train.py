@@ -72,6 +72,7 @@ class TrainPipelineConfig(HubMixin):
     wandb: WandBConfig = field(default_factory=WandBConfig)
     test_dataloader: bool = False
     num_epochs: int = 1
+    ddp_timeout_s: int = 6000
 
     def __post_init__(self):
         self.checkpoint_path = None
@@ -91,7 +92,7 @@ class TrainPipelineConfig(HubMixin):
                     "Resuming from the hub is not supported for now."
                 )
             policy_path = Path(config_path).parent.parent / "pretrained_model"
-            
+
         if policy_path:
             # Load the policy config
             cli_overrides = parser.get_cli_overrides("policy")

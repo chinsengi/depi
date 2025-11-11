@@ -22,8 +22,10 @@ from pathlib import Path
 import pandas as pd
 import tqdm
 
+from lerobot.common.datasets.lerobot_dataset_v3 import LeRobotDatasetMetadataV3
+from lerobot.common.datasets.video_utils import concatenate_video_files, get_video_duration_in_s
+
 from .compute_stats import aggregate_stats
-from .lerobot_dataset import LeRobotDatasetMetadataV3
 from .utils import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_DATA_FILE_SIZE_IN_MB,
@@ -39,7 +41,6 @@ from .utils import (
     write_stats,
     write_tasks,
 )
-from .video_utils import concatenate_video_files, get_video_duration_in_s
 
 
 def validate_all_metadata(all_metadata: list[LeRobotDatasetMetadataV3]):
@@ -205,7 +206,8 @@ def aggregate_datasets(
         [LeRobotDatasetMetadataV3(repo_id) for repo_id in repo_ids]
         if roots is None
         else [
-            LeRobotDatasetMetadataV3(repo_id, root=root) for repo_id, root in zip(repo_ids, roots, strict=False)
+            LeRobotDatasetMetadataV3(repo_id, root=root)
+            for repo_id, root in zip(repo_ids, roots, strict=False)
         ]
     )
     fps, robot_type, features = validate_all_metadata(all_metadata)

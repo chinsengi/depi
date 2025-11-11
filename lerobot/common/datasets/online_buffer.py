@@ -15,7 +15,7 @@
 # limitations under the License.
 """An online buffer for the online training loop in train.py
 
-Note to maintainers: This duplicates some logic from LeRobotDataset and EpisodeAwareSampler. We should
+Note to maintainers: This duplicates some logic from LeRobotDatasetV3 and EpisodeAwareSampler. We should
 consider converging to one approach. Here we have opted to use numpy.memmap to back the data buffer. It's much
 faster than using HuggingFace Datasets as there's no conversion to an intermediate non-python object. Also it
 supports in-place slicing and mutation which is very handy for a dynamic buffer.
@@ -29,6 +29,7 @@ import numpy as np
 import torch
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.datasets.lerobot_dataset_v3 import LeRobotDatasetV3
 
 
 def _make_memmap_safe(**kwargs) -> np.memmap:
@@ -131,9 +132,7 @@ class OnlineBuffer(torch.utils.data.Dataset):
         else:
             self._delta_timestamps = None
 
-    def _make_data_spec(
-        self, data_spec: dict[str, Any], buffer_capacity: int
-    ) -> dict[str, dict[str, Any]]:
+    def _make_data_spec(self, data_spec: dict[str, Any], buffer_capacity: int) -> dict[str, dict[str, Any]]:
         """Makes the data spec for np.memmap."""
         if any(k.startswith("_") for k in data_spec):
             raise ValueError(
@@ -208,9 +207,7 @@ class OnlineBuffer(torch.utils.data.Dataset):
 
         # Shift the incoming indices if necessary.
         if self.num_frames > 0:
-            last_episode_index = self._data[OnlineBuffer.EPISODE_INDEX_KEY][
-                next_index - 1
-            ]
+            last_episode_index = self._data[OnlineBuffer.EPISODE_INDEX_KEY][next_index - 1]
             last_data_index = self._data[OnlineBuffer.INDEX_KEY][next_index - 1]
             data[OnlineBuffer.EPISODE_INDEX_KEY] += last_episode_index + 1
             data[OnlineBuffer.INDEX_KEY] += last_data_index + 1
@@ -245,11 +242,7 @@ class OnlineBuffer(torch.utils.data.Dataset):
     @property
     def num_episodes(self) -> int:
         return len(
-            np.unique(
-                self._data[OnlineBuffer.EPISODE_INDEX_KEY][
-                    self._data[OnlineBuffer.OCCUPANCY_MASK_KEY]
-                ]
-            )
+            np.unique(self._data[OnlineBuffer.EPISODE_INDEX_KEY][self._data[OnlineBuffer.OCCUPANCY_MASK_KEY]])
         )
 
     @property
@@ -287,9 +280,7 @@ class OnlineBuffer(torch.utils.data.Dataset):
                 self._data[OnlineBuffer.OCCUPANCY_MASK_KEY],
             )
         )[0]
-        episode_timestamps = self._data[OnlineBuffer.TIMESTAMP_KEY][
-            episode_data_indices
-        ]
+        episode_timestamps = self._data[OnlineBuffer.TIMESTAMP_KEY][episode_data_indices]
 
         for data_key in self.delta_timestamps:
             # Note: The logic in this loop is copied from `load_previous_and_future_frames`.
@@ -306,8 +297,7 @@ class OnlineBuffer(torch.utils.data.Dataset):
 
             # Check violated query timestamps are all outside the episode range.
             assert (
-                (query_ts[is_pad] < episode_timestamps[0])
-                | (episode_timestamps[-1] < query_ts[is_pad])
+                (query_ts[is_pad] < episode_timestamps[0]) | (episode_timestamps[-1] < query_ts[is_pad])
             ).all(), (
                 f"One or several timestamps unexpectedly violate the tolerance ({min_} > {self.tolerance_s=}"
                 ") inside the episode range."
@@ -322,13 +312,11 @@ class OnlineBuffer(torch.utils.data.Dataset):
 
     def get_data_by_key(self, key: str) -> torch.Tensor:
         """Returns all data for a given data key as a Tensor."""
-        return torch.from_numpy(
-            self._data[key][self._data[OnlineBuffer.OCCUPANCY_MASK_KEY]]
-        )
+        return torch.from_numpy(self._data[key][self._data[OnlineBuffer.OCCUPANCY_MASK_KEY]])
 
 
 def compute_sampler_weights(
-    offline_dataset: LeRobotDataset,
+    offline_dataset: LeRobotDataset | LeRobotDatasetV3,
     offline_drop_n_last_frames: int = 0,
     online_dataset: OnlineBuffer | None = None,
     online_sampling_ratio: float | None = None,
@@ -355,32 +343,34 @@ def compute_sampler_weights(
         - Options `drop_first_n_frames` and `episode_indices_to_use` can be added easily. They were not
           included here to avoid adding complexity.
     """
-    if len(offline_dataset) == 0 and (
-        online_dataset is None or len(online_dataset) == 0
-    ):
-        raise ValueError(
-            "At least one of `offline_dataset` or `online_dataset` should be contain data."
-        )
+    if len(offline_dataset) == 0 and (online_dataset is None or len(online_dataset) == 0):
+        raise ValueError("At least one of `offline_dataset` or `online_dataset` should be contain data.")
     if (online_dataset is None) ^ (online_sampling_ratio is None):
         raise ValueError(
             "`online_dataset` and `online_sampling_ratio` must be provided together or not at all."
         )
-    offline_sampling_ratio = (
-        0 if online_sampling_ratio is None else 1 - online_sampling_ratio
-    )
+    offline_sampling_ratio = 0 if online_sampling_ratio is None else 1 - online_sampling_ratio
 
     weights = []
 
     if len(offline_dataset) > 0:
         offline_data_mask_indices = []
-        for start_index, end_index in zip(
-            offline_dataset.episode_data_index["from"],
-            offline_dataset.episode_data_index["to"],
-            strict=True,
-        ):
-            offline_data_mask_indices.extend(
-                range(start_index.item(), end_index.item() - offline_drop_n_last_frames)
+        if hasattr(offline_dataset, "episode_data_index"):
+            episode_ranges = zip(
+                offline_dataset.episode_data_index["from"],
+                offline_dataset.episode_data_index["to"],
+                strict=True,
             )
+        else:
+            episode_ranges = zip(
+                offline_dataset.meta.episodes["dataset_from_index"],
+                offline_dataset.meta.episodes["dataset_to_index"],
+                strict=True,
+            )
+        for start_index, end_index in episode_ranges:
+            start = int(start_index)
+            end = int(end_index)
+            offline_data_mask_indices.extend(range(start, end - offline_drop_n_last_frames))
         offline_data_mask = torch.zeros(len(offline_dataset), dtype=torch.bool)
         offline_data_mask[torch.tensor(offline_data_mask_indices)] = True
         weights.append(

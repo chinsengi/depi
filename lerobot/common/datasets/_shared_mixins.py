@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import packaging.version
 import torch
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, snapshot_download
 from PIL import Image as PILImage
 
 from lerobot.common.datasets.image_writer import AsyncImageWriter, write_image
@@ -37,6 +37,15 @@ class DatasetMetadataAccessorsMixin:
         allow_patterns: list[str] | str | None = None,
         ignore_patterns: list[str] | str | None = None,
     ) -> None:
+        if self.revision is not None:
+            api = HfApi()
+            try:
+                api.repo_info(self.repo_id, repo_type="dataset", revision=self.revision)
+            except Exception as e:
+                logging.error(
+                    f"Revision '{self.revision}' does not exist in dataset repo '{self.repo_id}'. Error: {e}"
+                )
+                self.revision = None
         snapshot_download(
             self.repo_id,
             repo_type="dataset",
@@ -136,6 +145,15 @@ class DatasetCommonMixin:
         allow_patterns: list[str] | str | None = None,
         ignore_patterns: list[str] | str | None = None,
     ) -> None:
+        if self.revision is not None:
+            api = HfApi()
+            try:
+                api.repo_info(self.repo_id, repo_type="dataset", revision=self.revision)
+            except Exception as e:
+                logging.error(
+                    f"Revision '{self.revision}' does not exist in dataset repo '{self.repo_id}'. Error: {e}"
+                )
+                self.revision = None
         snapshot_download(
             self.repo_id,
             repo_type="dataset",
@@ -160,13 +178,13 @@ class DatasetCommonMixin:
         return self.meta.features
 
     @property
-    def hf_features(self) -> "datasets.Features":
+    def hf_features(self):
         """Features of the hf_dataset."""
         if self.hf_dataset is not None:
             return self.hf_dataset.features
         return self._build_hf_features()
 
-    def _build_hf_features(self) -> "datasets.Features":
+    def _build_hf_features(self):
         raise NotImplementedError("_build_hf_features must be implemented by subclasses.")
 
     def __len__(self):

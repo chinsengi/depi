@@ -21,12 +21,14 @@ import numpy as np
 import torch
 from datasets import load_dataset
 
-from .lerobot_dataset import (
+from lerobot.common.datasets.exceptions import MissingAnnotatedTasksError
+from lerobot.common.utils.constants import HF_LEROBOT_HOME, LOOKAHEAD_BACKTRACKTABLE, LOOKBACK_BACKTRACKTABLE
+
+from .lerobot_dataset_v3 import (
     CODEBASE_VERSION_V3,
     LeRobotDatasetMetadataV3,
-    LeRobotDatasetV3,
 )
-from .utils import (
+from .v3.utils import (
     Backtrackable,
     LookAheadError,
     LookBackError,
@@ -37,11 +39,7 @@ from .utils import (
     item_to_torch,
     safe_shard,
 )
-from .video_utils import (
-    VideoDecoderCache,
-    decode_video_frames_torchcodec,
-)
-from lerobot.common.utils.constants import HF_LEROBOT_HOME, LOOKAHEAD_BACKTRACKTABLE, LOOKBACK_BACKTRACKTABLE
+from .video_utils import VideoDecoderCache, decode_video_frames_torchcodec
 
 
 class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
@@ -98,6 +96,7 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
         seed: int = 42,
         rng: np.random.Generator | None = None,
         shuffle: bool = True,
+        use_annotated_tasks: bool = False,
     ):
         """Initialize a StreamingLeRobotDatasetV3.
 
@@ -116,6 +115,7 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
             seed (int, optional): Reproducibility random seed.
             rng (np.random.Generator | None, optional): Random number generator.
             shuffle (bool, optional): Whether to shuffle the dataset across exhaustions. Defaults to True.
+            use_annotated_tasks (bool, optional): Flag to load external annotated instructions. Defaults to False.
         """
         super().__init__()
         self.repo_id = repo_id
@@ -129,6 +129,7 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
         self.seed = seed
         self.rng = rng if rng is not None else np.random.default_rng(seed)
         self.shuffle = shuffle
+        self.use_annotated_tasks = use_annotated_tasks
 
         self.streaming = streaming
         self.buffer_size = buffer_size
@@ -140,7 +141,11 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
 
         # Load metadata
         self.meta = LeRobotDatasetMetadataV3(
-            self.repo_id, self.root, self.revision, force_cache_sync=force_cache_sync
+            self.repo_id,
+            self.root,
+            self.revision,
+            force_cache_sync=force_cache_sync,
+            use_annotated_tasks=use_annotated_tasks,
         )
         # Check version
         check_version_compatibility(self.repo_id, self.meta._version, CODEBASE_VERSION_V3)
@@ -357,7 +362,14 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
         for update in updates:
             result.update(update)
 
-        result["task"] = self.meta.tasks.iloc[item["task_index"]].name
+        if self.use_annotated_tasks:
+            if self.meta.annotated_tasks is None:
+                raise MissingAnnotatedTasksError(
+                    f"Annotated tasks requested for {self.repo_id} but annotation metadata was not loaded."
+                )
+            result["task"] = self.meta.annotated_tasks[ep_idx]
+        else:
+            result["task"] = self.meta.tasks.iloc[item["task_index"]].name
 
         yield result
 

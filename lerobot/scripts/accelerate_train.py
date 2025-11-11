@@ -15,6 +15,7 @@
 import logging
 import time
 from contextlib import nullcontext
+from datetime import timedelta
 from pathlib import Path
 from pprint import pformat
 from typing import Any
@@ -22,7 +23,7 @@ from typing import Any
 import torch
 from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate.scheduler import AcceleratedScheduler
-from accelerate.utils import DistributedDataParallelKwargs, TorchDynamoPlugin
+from accelerate.utils import DistributedDataParallelKwargs, InitProcessGroupKwargs, TorchDynamoPlugin
 from termcolor import colored
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
@@ -126,6 +127,7 @@ def train(cfg: TrainPipelineConfig):
 
     # Initialise Accelerator – handles multi-GPU / multi-node & mixed precision
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    pg_kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=cfg.ddp_timeout_s))
     dynamo_plugin = TorchDynamoPlugin(
         use_regional_compilation=False,
         backend="inductor",  # Options: "inductor", "aot_eager", "aot_nvfuser", etc.
@@ -139,7 +141,7 @@ def train(cfg: TrainPipelineConfig):
     accelerator = Accelerator(
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
         dynamo_plugin=dynamo_plugin,
-        kwargs_handlers=[ddp_kwargs],
+        kwargs_handlers=[ddp_kwargs, pg_kwargs],
         dataloader_config=dataloader_cfg,
     )
 
@@ -293,10 +295,7 @@ def train(cfg: TrainPipelineConfig):
         if current_opt_step > cfg.steps:
             break
         init_step = current_opt_step
-        if epoch == 0:
-            current_dataloader = skipped_dataloader
-        else:
-            current_dataloader = dataloader
+        current_dataloader = skipped_dataloader if epoch == 0 else dataloader
 
         for batch_idx, batch in enumerate(current_dataloader):
             # Accelerator handles gradient accumulation, so we track actual optimization steps

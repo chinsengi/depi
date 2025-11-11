@@ -22,18 +22,20 @@ import torch
 from tqdm import tqdm
 
 from data_ids.filter_so100_data import get_repo_ids
+from lerobot.common.datasets.exceptions import MissingAnnotatedTasksError
 from lerobot.common.datasets.lerobot_dataset import (
     LeRobotDataset,
     LeRobotDatasetMetadata,
-    MissingAnnotatedTasksError,
     MultiLeRobotDataset,
 )
 from lerobot.common.datasets.lerobot_dataset_v3 import (
     LeRobotDatasetMetadataV3,
     LeRobotDatasetV3,
 )
+from lerobot.common.datasets.streaming_dataset import StreamingLeRobotDatasetV3
 from lerobot.common.datasets.transforms import ImageTransforms
 from lerobot.common.datasets.utils import get_repo_versions
+from lerobot.common.utils.constants import ACTION, OBS_PREFIX, REWARD
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.train import TrainPipelineConfig
 
@@ -63,11 +65,11 @@ def resolve_delta_timestamps(
     """
     delta_timestamps = {}
     for key in ds_meta.features:
-        if key == "next.reward" and cfg.reward_delta_indices is not None:
+        if key == REWARD and cfg.reward_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.reward_delta_indices]
-        if key == "action" and cfg.action_delta_indices is not None:
+        if key == ACTION and cfg.action_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
-        if key.startswith("observation.") and cfg.observation_delta_indices is not None:
+        if key.startswith(OBS_PREFIX) and cfg.observation_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.observation_delta_indices]
 
     if len(delta_timestamps) == 0:
@@ -125,6 +127,7 @@ def load_delta_timestamps(
             root=cfg.dataset.root,
             revision=cfg.dataset.revision,
             force_cache_sync=cfg.dataset.force_cache_sync,
+            use_annotated_tasks=cfg.dataset.use_annotated_tasks,
         )
     else:
         if major_version is None:
@@ -161,16 +164,30 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         is_v3_dataset = major_version is not None and major_version >= 3
 
         if is_v3_dataset:
-            dataset = LeRobotDatasetV3(
-                cfg.dataset.repo_id,
-                root=cfg.dataset.root,
-                episodes=cfg.dataset.episodes,
-                delta_timestamps=delta_timestamps,
-                image_transforms=image_transforms,
-                revision=cfg.dataset.revision,
-                video_backend=cfg.dataset.video_backend,
-                force_cache_sync=cfg.dataset.force_cache_sync,
-            )
+            streaming = getattr(cfg.dataset, "streaming", False)
+            if not streaming:
+                dataset = LeRobotDatasetV3(
+                    cfg.dataset.repo_id,
+                    root=cfg.dataset.root,
+                    episodes=cfg.dataset.episodes,
+                    delta_timestamps=delta_timestamps,
+                    image_transforms=image_transforms,
+                    revision=cfg.dataset.revision,
+                    video_backend=cfg.dataset.video_backend,
+                    force_cache_sync=cfg.dataset.force_cache_sync,
+                    use_annotated_tasks=cfg.dataset.use_annotated_tasks,
+                )
+            else:
+                dataset = StreamingLeRobotDatasetV3(
+                    cfg.dataset.repo_id,
+                    root=cfg.dataset.root,
+                    episodes=cfg.dataset.episodes,
+                    delta_timestamps=delta_timestamps,
+                    image_transforms=image_transforms,
+                    revision=cfg.dataset.revision,
+                    max_num_shards=cfg.num_workers,
+                    use_annotated_tasks=cfg.dataset.use_annotated_tasks,
+                )
         else:
             if major_version is None:
                 logging.warning(
@@ -190,7 +207,6 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             )
     else:
         # Handle multiple datasets
-        # TODO: support more flexible dataset selection
         if cfg.dataset.repo_ids is None:
             logging.info(f"Loading {cfg.num_datasets} pretraining datasets.")
             repo_ids = get_repo_ids("so100", len_limit=cfg.num_datasets, load_from_cache=True)
@@ -233,7 +249,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             filtered_repo_ids.append(repo_id)
 
         if not filtered_repo_ids:
-            raise RuntimeError("No datasets left after filtering invalid delta timestamps.")
+            raise RuntimeError("No datasets left after filtering.")
 
         if skipped_repo_ids:
             logging.warning(

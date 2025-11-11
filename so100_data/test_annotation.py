@@ -30,8 +30,8 @@ def test_single_dataset():
     # test_repo_id = "samsam0510/tooth_extraction_4"
     # test_repo_id = "HITHY/so100_peach1"
     # test_repo_id = "AK51/so100_test6"
-    test_repo_id = "shylee/so100_pengripA"
-    model_name = "Qwen/Qwen2.5-VL-7B-Instruct"
+    test_repo_id = "Aravindh25/so100_orange_basket1"
+    model_name = "Qwen/Qwen3-VL-8B-Instruct"
 
     logger.info(f"Testing annotation on dataset: {test_repo_id}")
     logger.info(f"Using model: {model_name}")
