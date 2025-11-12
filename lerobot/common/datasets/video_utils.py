@@ -20,6 +20,7 @@ import re
 import shutil
 import tempfile
 import warnings
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
@@ -148,9 +149,10 @@ def decode_video_frames_torchvision(
 class VideoDecoderCache:
     """Thread-safe cache for video decoders to avoid expensive re-initialization."""
 
-    def __init__(self):
-        self._cache: dict[str, tuple[Any, Any]] = {}
+    def __init__(self, max_size: int = 16):
+        self._cache: OrderedDict[str, tuple[Any, Any]] = OrderedDict()
         self._lock = Lock()
+        self.max_size = max_size
 
     def get_decoder(self, video_path: str):
         """Get a cached decoder or create a new one."""
@@ -162,12 +164,20 @@ class VideoDecoderCache:
         video_path = str(video_path)
 
         with self._lock:
-            if video_path not in self._cache:
-                file_handle = fsspec.open(video_path).__enter__()
-                decoder = VideoDecoder(file_handle, seek_mode="approximate")
+            if video_path in self._cache:
+                decoder, file_handle = self._cache.pop(video_path)
                 self._cache[video_path] = (decoder, file_handle)
+                return decoder
 
-            return self._cache[video_path][0]
+            file_handle = fsspec.open(video_path).__enter__()
+            decoder = VideoDecoder(file_handle, seek_mode="approximate")
+
+            if len(self._cache) >= self.max_size:
+                _, (old_decoder, old_handle) = self._cache.popitem(last=False)
+                old_handle.close()
+
+            self._cache[video_path] = (decoder, file_handle)
+            return decoder
 
     def clear(self):
         """Clear the cache and close file handles."""

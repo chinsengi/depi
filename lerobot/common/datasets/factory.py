@@ -253,7 +253,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
 
         if skipped_repo_ids:
             logging.warning(
-                "Skipped %d dataset(s) with missing delta timestamps. First few: %s",
+                "Skipped %d dataset(s). First few: %s",
                 len(skipped_repo_ids),
                 skipped_repo_ids[:5],
             )
