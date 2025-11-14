@@ -182,3 +182,4 @@ so100_data/test_annotations/
 tests/
 so100_data/annotate.sh
 external/
+tmp*
