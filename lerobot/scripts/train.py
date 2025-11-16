@@ -13,8 +13,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import logging
 import time
+import warnings
 from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
@@ -55,6 +57,13 @@ from lerobot.common.utils.wandb_utils import WandBLogger
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.scripts.eval import eval_policy
+
+warnings.warn(
+    "This script is deprecated and will be removed in a future version. "
+    "Please use the new training script `accelerate_train.py` instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 def update_policy(
