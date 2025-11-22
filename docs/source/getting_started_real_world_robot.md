@@ -309,7 +309,7 @@ To train a policy to control your robot, use the [`python lerobot/scripts/train.
 ```bash
 python lerobot/scripts/train.py \
   --dataset.repo_id=${HF_USER}/so101_test \
-  --policy.type=act \
+  --policy.type=pi0 \
   --output_dir=outputs/train/act_so101_test \
   --job_name=act_so101_test \
   --policy.device=cuda \
@@ -358,8 +358,8 @@ python lerobot/scripts/control_robot.py \
   --control.repo_id=${HF_USER}/eval_act_so101_test \
   --control.tags='["tutorial"]' \
   --control.warmup_time_s=5 \
-  --control.episode_time_s=30 \
-  --control.reset_time_s=30 \
+  --control.episode_time_s=30000 \
+  --control.reset_time_s=300 \
   --control.num_episodes=10 \
   --control.push_to_hub=true \
   --control.policy.path=outputs/train/act_so101_test/checkpoints/last/pretrained_model

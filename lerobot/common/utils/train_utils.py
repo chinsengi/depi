@@ -18,6 +18,7 @@ import shutil
 from pathlib import Path
 
 import torch
+from accelerate.utils import is_compiled_module
 from termcolor import colored
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -232,3 +233,71 @@ def load_training_state(
         load_dataloader_state(dataloader, training_state_dir)
 
     return step, optimizer, scheduler
+
+
+def reconcile_checkpoint_compile_state(checkpoint_path: Path, model: torch.nn.Module) -> None:
+    """
+    Align checkpoint weights with current model regarding torch.compile wrapping.
+    If the checkpoint was saved from an uncompiled model, keys won't have the `_orig_mod.` prefix.
+    If it was saved from a compiled model, keys will start with `_orig_mod.`.
+    Adjust the checkpoint in-place when the checkpoint and current model differ.
+    """
+    candidate_files = [
+        ("safetensors", checkpoint_path / "model.safetensors"),
+        ("safetensors", checkpoint_path / "pytorch_model.safetensors"),
+        ("bin", checkpoint_path / "model.bin"),
+        ("bin", checkpoint_path / "pytorch_model.bin"),
+    ]
+    model_file = None
+    save_format = None
+    for fmt, path in candidate_files:
+        if path.exists():
+            model_file, save_format = path, fmt
+            break
+    if model_file is None:
+        return
+
+    if save_format == "safetensors":
+        from safetensors.torch import load_file, save_file
+
+        state_dict = load_file(str(model_file))
+    else:
+        state_dict = torch.load(model_file, map_location="cpu", weights_only=True)
+
+    def _has_orig_mod(keys):
+        return any("._orig_mod." in k or k.startswith("_orig_mod.") for k in keys)
+
+    state_compiled = _has_orig_mod(state_dict.keys())
+    model_compiled = is_compiled_module(model)
+
+    if state_compiled == model_compiled:
+        return
+
+    def _strip_orig_mod(key: str) -> str:
+        if "._orig_mod." in key:
+            return key.replace("._orig_mod.", ".", 1)
+        if key.startswith("_orig_mod."):
+            return key.removeprefix("_orig_mod.")
+        return key
+
+    def _add_orig_mod(key: str) -> str:
+        if "._orig_mod." in key or key.startswith("_orig_mod."):
+            return key
+        # common Hugging Face file naming uses a leading "model." prefix
+        if key.startswith("model."):
+            return key.replace("model.", "model._orig_mod.", 1)
+        return f"_orig_mod.{key}"
+
+    if state_compiled:
+        patched_state = {_strip_orig_mod(k): v for k, v in state_dict.items()}
+        logging.info("Checkpoint de-prefixed for uncompiled model.")
+    else:
+        patched_state = {_add_orig_mod(k): v for k, v in state_dict.items()}
+        logging.info("Checkpoint prefixed for compiled model.")
+
+    if save_format == "safetensors":
+        from safetensors.torch import save_file  # type: ignore
+
+        save_file(patched_state, str(model_file))
+    else:
+        torch.save(patched_state, model_file)

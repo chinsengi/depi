@@ -43,6 +43,7 @@ from lerobot.common.utils.train_utils import (
     get_step_checkpoint_dir,
     get_step_identifier,
     load_training_step,
+    reconcile_checkpoint_compile_state,
     save_training_step,
     update_last_checkpoint,
 )
@@ -273,14 +274,10 @@ def train(cfg: TrainPipelineConfig):
 
     # Resume training after accelerator.prepare() if needed
     if cfg.resume:
-        try:
-            # Use accelerator's load method
-            accelerator.load_state(cfg.checkpoint_path, strict=True)
-            # Get the step from the loaded state
-            step = load_training_step(cfg.checkpoint_path) + 1
-        except Exception as e:
-            logging.info(f"resume error: {e}")
-            raise e
+        reconcile_checkpoint_compile_state(Path(cfg.checkpoint_path), policy.model)
+        accelerator.load_state(cfg.checkpoint_path, strict=True)
+        # Get the step from the loaded state
+        step = load_training_step(cfg.checkpoint_path) + 1
         accelerator.wait_for_everyone()
 
     skipped_dataloader = accelerator.skip_first_batches(
@@ -370,6 +367,7 @@ def train(cfg: TrainPipelineConfig):
 
                 update_last_checkpoint(checkpoint_dir)
                 # Clean up old checkpoints, keeping only the last 2
+                # TODO: make the number of kept checkpoints a config param
                 cleanup_old_checkpoints(cfg.output_dir / CHECKPOINTS_DIR, keep_last_n=2)
 
                 unwrapped_model = accelerator.unwrap_model(policy.model, keep_torch_compile=False)
