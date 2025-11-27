@@ -19,9 +19,9 @@ from typing import Any
 
 import torch
 
-from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
-from lerobot.processor import ActionProcessorStep, PolicyAction, ProcessorStepRegistry, RobotAction
+from lerobot.common.processor import ActionProcessorStep, PolicyAction, ProcessorStepRegistry, RobotAction
 from lerobot.common.utils.constants import ACTION
+from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
 
 
 @dataclass

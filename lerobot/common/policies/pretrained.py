@@ -1,4 +1,5 @@
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+# Modified by Shirui Chen
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -44,6 +45,48 @@ DEFAULT_POLICY_CARD = """
 This policy has been pushed to the Hub using [LeRobot](https://github.com/huggingface/lerobot):
 - Docs: {{ docs_url | default("[More Information Needed]", true) }}
 """
+
+
+def _normalize_map_location(map_location: Union[str, torch.device]) -> str:
+    """Return a safe device string for loading weights.
+
+    - Falls back to CPU when the requested backend isn't available.
+    - For CUDA, also guards against invalid device indices.
+    """
+
+    device_str = str(map_location)
+
+    if device_str.startswith("cuda"):
+        if not torch.cuda.is_available():
+            logging.warning("CUDA requested but not available; falling back to CPU for loading weights.")
+            return "cpu"
+
+        # Validate device index if provided (e.g., cuda:3)
+        if ":" in device_str:
+            try:
+                idx = int(device_str.split(":", 1)[1])
+                if idx >= torch.cuda.device_count():
+                    logging.warning(
+                        "CUDA device index %s unavailable (only %s GPUs detected); using cuda:0 instead.",
+                        idx,
+                        torch.cuda.device_count(),
+                    )
+                    return "cuda:0"
+            except ValueError:
+                logging.warning("Unrecognized CUDA device format '%s'; defaulting to cuda:0.", device_str)
+                return "cuda:0"
+
+    elif device_str == "mps" and not torch.backends.mps.is_available():
+        logging.warning("MPS requested but not available; falling back to CPU for loading weights.")
+        return "cpu"
+
+    elif device_str == "xpu":
+        has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
+        if not has_xpu:
+            logging.warning("XPU requested but not available; falling back to CPU for loading weights.")
+            return "cpu"
+
+    return device_str
 
 
 def load_model(
@@ -205,6 +248,8 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
         model_id = str(pretrained_name_or_path)
         compile = kwargs.pop("compile", False)
         instance = cls(config, **kwargs)
+        target_device = _normalize_map_location(config.device)
+
         if os.path.isdir(model_id):
             logging.info("Loading weights from local directory")
             # TODO: when loading from a compiled model checkpoint, we need to compile the model first to correctly load the weights
@@ -224,7 +269,7 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
                     uncompiled_state_dict, model_file.parent / "uncompiled_model.safetensors"
                 )
                 uncompiled_model_file = model_file.parent / "uncompiled_model.safetensors"
-                policy = cls._load_as_safetensor(instance, uncompiled_model_file, config.device, strict)
+                policy = cls._load_as_safetensor(instance, uncompiled_model_file, target_device, strict)
         else:
             try:
                 model_file = hf_hub_download(
@@ -244,16 +289,17 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
                 ) from e
             try:
                 # try normal loading first
-                policy = cls._load_as_safetensor(instance, model_file, config.device, strict)
+                policy = cls._load_as_safetensor(instance, model_file, target_device, strict)
             except Exception:
                 logging.warning(f"Failed to load model from {model_file}, trying to compile the model.")
                 instance.model = torch.compile(instance.model)
-                policy = cls._load_as_safetensor(instance, model_file, config.device, strict)
+                policy = cls._load_as_safetensor(instance, model_file, target_device, strict)
 
         if compile and not is_compiled_module(instance.model):
             policy.model = torch.compile(policy.model)
 
-        policy.to(config.device)
+        policy.to(target_device)
+        policy.config.device = target_device
         policy.eval()
         return policy
 

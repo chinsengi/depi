@@ -17,6 +17,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol
 
+# PipelineFeatureType is used to key features in processor pipelines
+# It represents keys like "observation", "action", etc.
+PipelineFeatureType = str
+
 
 class FeatureType(str, Enum):
     STATE = "STATE"

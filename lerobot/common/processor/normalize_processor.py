@@ -24,9 +24,9 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from lerobot.common.constants import ACTION
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.configs.types import FeatureType, NormalizationMode, PipelineFeatureType, PolicyFeature
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.utils.constants import ACTION
 
 from .converters import from_tensor_to_numpy, to_tensor
 from .core import EnvTransition, PolicyAction, TransitionKey

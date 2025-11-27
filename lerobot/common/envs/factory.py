@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+# Modified by Shirui Chen, 2025
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import importlib
+from typing import Any
 
 import gymnasium as gym
 
@@ -25,6 +27,12 @@ from lerobot.common.envs.configs import (
     PushtEnv,
     XarmEnv,
 )
+from lerobot.common.processor import (
+    DataProcessorPipeline,
+    IdentityProcessorStep,
+    LiberoEnvProcessorStep,
+)
+from lerobot.common.processor.converters import observation_to_transition, transition_to_observation
 
 
 class UnsupportedRemoteEnvError(RuntimeError):
@@ -74,9 +82,7 @@ def make_env(
         dict[str, dict[int, gym.vector.VectorEnv]]: Mapping of suite name to vectorized envs.
     """
     if isinstance(cfg, str):
-        raise UnsupportedRemoteEnvError(
-            "Hub-provided environments are not supported in this distribution."
-        )
+        raise UnsupportedRemoteEnvError("Hub-provided environments are not supported in this distribution.")
 
     if n_envs < 1:
         raise ValueError("`n_envs` must be at least 1")
@@ -117,9 +123,7 @@ def make_env(
     try:
         importlib.import_module(package_name)
     except ModuleNotFoundError as e:
-        print(
-            f"{package_name} is not installed. Please install it with `pip install 'lerobot[{cfg.type}]'`"
-        )
+        print(f"{package_name} is not installed. Please install it with `pip install 'lerobot[{cfg.type}]'`")
         raise e
 
     gym_handle = f"{package_name}/{cfg.task}"
@@ -133,3 +137,47 @@ def make_env(
     )
 
     return {cfg.type: {0: vec_env}}
+
+
+def make_env_pre_post_processors(
+    env_cfg: EnvConfig,
+) -> tuple[
+    DataProcessorPipeline[dict[str, Any], dict[str, Any]],
+    DataProcessorPipeline[dict[str, Any], dict[str, Any]],
+]:
+    """Create environment-specific preprocessor and postprocessor pipelines.
+
+    Args:
+        env_cfg: The environment configuration
+
+    Returns:
+        A tuple of (env_preprocessor, env_postprocessor) pipelines
+    """
+    # Determine processor steps based on environment type
+    preprocessor_steps = []
+
+    # LIBERO and Metaworld need agent_pos handling for pixels-only mode
+    if env_cfg.type in ("libero", "metaworld"):
+        # Different agent_pos dimensions for each environment
+        agent_pos_dim = 8 if env_cfg.type == "libero" else 4
+        preprocessor_steps.append(LiberoEnvProcessorStep(agent_pos_dim=agent_pos_dim))
+    else:
+        # Other environments use identity processor
+        preprocessor_steps.append(IdentityProcessorStep())
+
+    env_preprocessor = DataProcessorPipeline[dict[str, Any], dict[str, Any]](
+        steps=preprocessor_steps,
+        name="env_preprocessor",
+        to_transition=observation_to_transition,
+        to_output=transition_to_observation,
+    )
+
+    # Postprocessor is identity for all environments
+    env_postprocessor = DataProcessorPipeline[dict[str, Any], dict[str, Any]](
+        steps=[IdentityProcessorStep()],
+        name="env_postprocessor",
+        to_transition=observation_to_transition,
+        to_output=transition_to_observation,
+    )
+
+    return env_preprocessor, env_postprocessor

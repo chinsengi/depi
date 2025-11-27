@@ -15,6 +15,8 @@
 # limitations under the License.
 
 import logging
+from pathlib import Path
+from typing import Any
 
 import torch
 from torch import nn
@@ -30,6 +32,13 @@ from lerobot.common.policies.pi0fast.configuration_pi0fast import PI0FASTConfig
 from lerobot.common.policies.pretrained import PreTrainedPolicy
 from lerobot.common.policies.tdmpc.configuration_tdmpc import TDMPCConfig
 from lerobot.common.policies.vqbet.configuration_vqbet import VQBeTConfig
+from lerobot.common.processor import (
+    DataProcessorPipeline,
+    DeviceProcessorStep,
+    IdentityProcessorStep,
+    PolicyAction,
+    RenameObservationsProcessorStep,
+)
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType
 
@@ -88,6 +97,7 @@ def make_policy(
     compile: bool = False,
     strict: bool = True,
     device: torch.device | None = None,
+    rename_map: dict[str, str] | None = None,
 ) -> PreTrainedPolicy:
     """Make an instance of a policy class.
 
@@ -101,13 +111,19 @@ def make_policy(
             statistics to use for (un)normalization of inputs/outputs in the policy. Defaults to None.
         env_cfg (EnvConfig | None, optional): The config of a gym environment to parse features from. Must be
             provided if ds_meta is not. Defaults to None.
+        compile (bool, optional): Whether to compile the policy model. Defaults to False.
+        strict (bool, optional): Whether to strictly enforce state dict loading. Defaults to True.
+        device (torch.device | None, optional): Device to load the policy on. Defaults to None.
+        rename_map (dict[str, str] | None, optional): Mapping for renaming observation keys. This parameter
+            is accepted for API compatibility but not used directly by make_policy. Use make_pre_post_processors
+            to create processors that use the rename_map. Defaults to None.
 
     Raises:
         ValueError: Either ds_meta or env and env_cfg must be provided.
         NotImplementedError: if the policy.type is 'vqbet' and the policy device 'mps' (due to an incompatibility)
 
     Returns:
-        PreTrainedPolicy: _description_
+        PreTrainedPolicy: The instantiated policy
     """
     if bool(ds_meta) == bool(env_cfg):
         raise ValueError("Either one of a dataset metadata or a sim env must be provided.")
@@ -173,3 +189,49 @@ def make_policy(
             policy.model = torch.compile(policy.model)
 
     return policy
+
+
+def make_pre_post_processors(
+    policy_cfg: PreTrainedConfig,
+    pretrained_path: str | Path | None = None,
+    preprocessor_overrides: dict[str, Any] | None = None,
+) -> tuple[
+    DataProcessorPipeline[dict[str, Any], dict[str, Any]], DataProcessorPipeline[PolicyAction, PolicyAction]
+]:
+    """Create preprocessor and postprocessor pipelines for a policy.
+
+    Args:
+        policy_cfg: The policy configuration
+        pretrained_path: Path to pretrained model (if any)
+        preprocessor_overrides: Dictionary of overrides for the preprocessor, e.g., {"rename_map": {...}}
+
+    Returns:
+        A tuple of (preprocessor, postprocessor) pipelines
+    """
+    preprocessor_steps = []
+
+    # Add rename step if rename_map is provided
+    if preprocessor_overrides and "rename_map" in preprocessor_overrides:
+        rename_map = preprocessor_overrides["rename_map"]
+        if rename_map:
+            preprocessor_steps.append(RenameObservationsProcessorStep(rename_map=rename_map))
+
+    # Add device transfer step
+    device_str = str(policy_cfg.device) if hasattr(policy_cfg, "device") else "cpu"
+    preprocessor_steps.append(DeviceProcessorStep(device=device_str))
+
+    # If no steps were added, use identity
+    if not preprocessor_steps:
+        preprocessor_steps = [IdentityProcessorStep()]
+
+    # Create preprocessor pipeline
+    preprocessor = DataProcessorPipeline[dict[str, Any], dict[str, Any]](
+        steps=preprocessor_steps, name="preprocessor"
+    )
+
+    # Create postprocessor pipeline (identity for now)
+    postprocessor = DataProcessorPipeline[PolicyAction, PolicyAction](
+        steps=[IdentityProcessorStep()], name="postprocessor"
+    )
+
+    return preprocessor, postprocessor

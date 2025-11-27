@@ -9,4 +9,8 @@
     title: Assemble SO-101
   - local: getting_started_real_world_robot
     title: Getting Started with Real-World Robots
+  - local: metaworld
+    title: Meta-World Evaluation
+  - local: libero
+    title: LIBERO Evaluation
   title: "Tutorials"

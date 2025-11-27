@@ -19,13 +19,13 @@ from typing import Any
 
 import torch
 
-from lerobot.configs.types import PipelineFeatureType, PolicyFeature
-from lerobot.processor.pipeline import (
+from lerobot.common.processor.pipeline import (
     ObservationProcessorStep,
     ProcessorStepRegistry,
 )
-from lerobot.robots import Robot
+from lerobot.common.robot_devices.robots.utils import Robot
 from lerobot.common.utils.constants import OBS_STATE
+from lerobot.configs.types import PipelineFeatureType, PolicyFeature
 
 
 @dataclass

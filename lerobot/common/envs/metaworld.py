@@ -14,10 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import os
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+
+# Force offscreen rendering when running headless (e.g., SLURM without X11).
+# Mujoco reads MUJOCO_GL at import time; set a safe default unless the user overrides it.
+os.environ.setdefault("MUJOCO_GL", "egl")
 
 import gymnasium as gym
 import metaworld

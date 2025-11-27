@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
+# Modified by Shirui Chen, 2025
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,16 +41,8 @@ from .gym_action_processor import (
     Numpy2TorchActionProcessorStep,
     Torch2NumpyActionProcessorStep,
 )
-from .hil_processor import (
-    AddTeleopActionAsComplimentaryDataStep,
-    AddTeleopEventsAsInfoStep,
-    GripperPenaltyProcessorStep,
-    ImageCropResizeProcessorStep,
-    InterventionActionProcessorStep,
-    RewardClassifierProcessorStep,
-    TimeLimitProcessorStep,
-)
 from .joint_observations_processor import JointVelocityProcessorStep, MotorCurrentProcessorStep
+from .libero_processor import LiberoEnvProcessorStep
 from .normalize_processor import NormalizerProcessorStep, UnnormalizerProcessorStep, hotswap_stats
 from .observation_processor import VanillaObservationProcessorStep
 from .pipeline import (
@@ -79,8 +72,6 @@ from .tokenizer_processor import TokenizerProcessorStep
 
 __all__ = [
     "ActionProcessorStep",
-    "AddTeleopActionAsComplimentaryDataStep",
-    "AddTeleopEventsAsInfoStep",
     "ComplementaryDataProcessorStep",
     "batch_to_transition",
     "create_transition",
@@ -88,13 +79,11 @@ __all__ = [
     "DoneProcessorStep",
     "EnvAction",
     "EnvTransition",
-    "GripperPenaltyProcessorStep",
     "hotswap_stats",
     "IdentityProcessorStep",
-    "ImageCropResizeProcessorStep",
     "InfoProcessorStep",
-    "InterventionActionProcessorStep",
     "JointVelocityProcessorStep",
+    "LiberoEnvProcessorStep",
     "make_default_processors",
     "make_default_teleop_action_processor",
     "make_default_robot_action_processor",
@@ -115,10 +104,8 @@ __all__ = [
     "RobotActionProcessorStep",
     "RobotObservation",
     "RenameObservationsProcessorStep",
-    "RewardClassifierProcessorStep",
     "RewardProcessorStep",
     "DataProcessorPipeline",
-    "TimeLimitProcessorStep",
     "AddBatchDimensionProcessorStep",
     "RobotProcessorPipeline",
     "TokenizerProcessorStep",

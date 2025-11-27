@@ -58,7 +58,11 @@ dependencies = [
     "torchdata>=0.11.0",
     "safetensors==0.6.2",
     "pre-commit>=4.3.0",
+    "metaworld==3.0.0"
 ]
+
+[project.scripts]
+lerobot-eval = "lerobot.scripts.eval:main"
 
 [project.optional-dependencies]
 aloha = ["gym-aloha>=0.1.1 ; python_version < '4.0'"]

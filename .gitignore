@@ -183,3 +183,4 @@ tests/
 so100_data/annotate.sh
 external/
 tmp*
+CLAUDE.md
