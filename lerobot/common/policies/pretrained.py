@@ -203,7 +203,7 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
                 **kwargs,
             )
         model_id = str(pretrained_name_or_path)
-        compile = kwargs.pop("compile", False)
+        compile = kwargs.pop("compile", config.compiled)
         instance = cls(config, **kwargs)
         if os.path.isdir(model_id):
             logging.info("Loading weights from local directory")
@@ -255,6 +255,7 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
 
         policy.to(config.device)
         policy.eval()
+        config.compiled = is_compiled_module(policy.model)
         return policy
 
     @classmethod

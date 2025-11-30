@@ -85,7 +85,7 @@ def make_policy(
     cfg: PreTrainedConfig,
     ds_meta: LeRobotDatasetMetadata | None = None,
     env_cfg: EnvConfig | None = None,
-    compile: bool = False,
+    compile: bool | None = None,
     strict: bool = True,
     device: torch.device | None = None,
 ) -> PreTrainedPolicy:
@@ -126,6 +126,11 @@ def make_policy(
         )
 
     policy_cls = get_policy_class(cfg.type)
+    compile = cfg.compiled
+    if compile is not None:
+        logging.warning(
+            "`compile` argument in `make_policy` is deprecated. Please set `cfg.compiled` instead."
+        )
 
     kwargs = {}
     if ds_meta is not None:

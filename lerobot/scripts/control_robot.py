@@ -166,6 +166,7 @@ from lerobot.common.robot_devices.control_utils import (
     stop_recording,
     warmup_record,
 )
+from lerobot.common.robot_devices.motors.feetech import TorqueMode
 from lerobot.common.robot_devices.robots.utils import Robot, make_robot_from_config
 from lerobot.common.robot_devices.utils import busy_wait, safe_disconnect
 from lerobot.common.utils.utils import has_method, init_logging, log_say
@@ -272,7 +273,13 @@ def record(
         )
 
     # Load pretrained policy
-    policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
+    if cfg.policy is None:
+        policy = None
+    else:
+        policy = make_policy(
+            cfg.policy,
+            ds_meta=dataset.meta,
+        )
 
     if not robot.is_connected:
         robot.connect()
@@ -418,22 +425,32 @@ def control_robot(cfg: ControlPipelineConfig):
     robot = make_robot_from_config(cfg.robot)
 
     # TODO(Steven): Blueprint for fixed window size
+    try:
+        if isinstance(cfg.control, CalibrateControlConfig):
+            calibrate(robot, cfg.control)
+        elif isinstance(cfg.control, TeleoperateControlConfig):
+            _init_rerun(control_config=cfg.control, session_name="lerobot_control_loop_teleop")
+            teleoperate(robot, cfg.control)
+        elif isinstance(cfg.control, RecordControlConfig):
+            _init_rerun(control_config=cfg.control, session_name="lerobot_control_loop_record")
+            record(robot, cfg.control)
+        elif isinstance(cfg.control, ReplayControlConfig):
+            replay(robot, cfg.control)
+        elif isinstance(cfg.control, RemoteRobotConfig):
+            from lerobot.common.robot_devices.robots.lekiwi_remote import run_lekiwi
 
-    if isinstance(cfg.control, CalibrateControlConfig):
-        calibrate(robot, cfg.control)
-    elif isinstance(cfg.control, TeleoperateControlConfig):
-        _init_rerun(control_config=cfg.control, session_name="lerobot_control_loop_teleop")
-        teleoperate(robot, cfg.control)
-    elif isinstance(cfg.control, RecordControlConfig):
-        _init_rerun(control_config=cfg.control, session_name="lerobot_control_loop_record")
-        record(robot, cfg.control)
-    elif isinstance(cfg.control, ReplayControlConfig):
-        replay(robot, cfg.control)
-    elif isinstance(cfg.control, RemoteRobotConfig):
-        from lerobot.common.robot_devices.robots.lekiwi_remote import run_lekiwi
-
-        _init_rerun(control_config=cfg.control, session_name="lerobot_control_loop_remote")
-        run_lekiwi(cfg.robot)
+            _init_rerun(control_config=cfg.control, session_name="lerobot_control_loop_remote")
+            run_lekiwi(cfg.robot)
+    except KeyboardInterrupt:
+        if robot.is_connected:
+            for name in robot.follower_arms:
+                robot.follower_arms[name].write("Torque_Enable", TorqueMode.DISABLED.value)
+            for name in robot.leader_arms:
+                robot.leader_arms[name].write("Torque_Enable", TorqueMode.DISABLED.value)
+            # Disconnect manually to avoid a "Core dump" during process
+            # termination due to camera threads not properly exiting.
+            robot.disconnect()
+        logging.info("Keyboard interrupt received, shutting down...")
 
     if robot.is_connected:
         # Disconnect manually to avoid a "Core dump" during process
