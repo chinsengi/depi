@@ -357,8 +357,8 @@ python lerobot/scripts/control_robot.py \
   --control.single_task="Grasp a lego block and put it in the bin." \
   --control.repo_id=${HF_USER}/eval_act_so101_test \
   --control.tags='["tutorial"]' \
-  --control.warmup_time_s=5 \
-  --control.episode_time_s=30 \
+  --control.warmup_time_s=50 \
+  --control.episode_time_s=30000 \
   --control.reset_time_s=30 \
   --control.num_episodes=10 \
   --control.push_to_hub=true \
