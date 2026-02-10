@@ -2,7 +2,7 @@
 
 n_gpus=1
 
-export PRETRAINED_MODEL_PATH="thomas0829/pi05-pytorch-base"
+export PRETRAINED_MODEL_PATH="lerobot/pi05_base"
 
 RENAME_MAP='{"observation.images.front_camera":"observation.images.top","observation.images.left_camera":"observation.images.left","observation.images.right_camera":"observation.images.right"}'
 
@@ -20,12 +20,12 @@ accelerate launch \
     --save_freq=5000 \
     --strict=true \
     --num_workers=4 \
-    --log_freq=100 \
+    --log_freq=10 \
     --gradient_accumulation_steps=2 \
     --policy.gradient_checkpointing=true \
     --policy.scheduler_decay_lr=1e-5 \
-    --policy.scheduler_decay_steps=1000000 \
-    --policy.optimizer_lr=1e-4 \
+    --policy.scheduler_decay_steps=30000 \
+    --policy.optimizer_lr=2.5e-5 \
     --policy.repo_id="thomas0829/finetune_pi05" \
     --policy.push_to_hub=true \
     --policy.private=false \
