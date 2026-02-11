@@ -49,6 +49,7 @@ from lerobot.common.utils.constants import (
     ACTION,
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
+    OBS_STATE,
     OPENPI_ATTENTION_MASK_VALUE,
 )
 
@@ -879,17 +880,25 @@ class PI05Policy(PreTrainedPolicy):
     def __init__(
         self,
         config: PI05Config,
+        dataset_stats: dict[str, dict[str, Tensor]] | None = None,
         rename_map: dict[str, str] | None = None,
     ):
         """
         Args:
             config: Policy configuration class instance.
+            dataset_stats: Dataset statistics for action normalization during training.
+                If not passed here, they will be loaded from a pretrained checkpoint.
             rename_map: Optional mapping to rename batch keys at runtime
         """
         super().__init__(config)
         config.validate_features()
         self.config = config
         self.rename_map = rename_map or {}
+
+        # Store action/state normalization stats (same normalization as the preprocessor)
+        self._setup_action_normalizer(config, dataset_stats)
+        self._setup_state_normalizer(config, dataset_stats)
+        self._setup_training_tokenizer()
 
         # Initialize the core PI05 model
         self.init_rtc_processor()
@@ -955,8 +964,8 @@ class PI05Policy(PreTrainedPolicy):
             )
 
         # Initialize model without loading weights
-        # Filter out kwargs that are not for __init__ (like dataset_stats)
-        init_kwargs = {k: v for k, v in kwargs.items() if k not in ['dataset_stats', 'compile', 'force_download', 'resume_download', 'proxies', 'token', 'cache_dir', 'local_files_only']}
+        # Pass dataset_stats to __init__ for action normalization, filter out other non-init kwargs
+        init_kwargs = {k: v for k, v in kwargs.items() if k not in ['compile', 'force_download', 'resume_download', 'proxies', 'token', 'cache_dir', 'local_files_only']}
         model = cls(config, **init_kwargs)
 
         # Now manually load and remap the state dict
@@ -1234,6 +1243,165 @@ class PI05Policy(PreTrainedPolicy):
     def get_optim_params(self) -> dict:
         return self.parameters()
 
+    def _setup_action_normalizer(self, config, dataset_stats):
+        """Store action normalization stats as buffers for training.
+
+        Other policies (ACT, Diffusion) use normalize.Normalize for this, but that
+        module doesn't support QUANTILES mode. PI05 uses QUANTILES, so we store the
+        stats directly and apply normalization in forward().
+        """
+        from lerobot.configs.types import NormalizationMode
+
+        norm_mode = config.normalization_mapping.get("ACTION", NormalizationMode.IDENTITY)
+        # Use .value to get the plain string (e.g. "QUANTILES") — str() on a str,Enum
+        # in Python <3.11 produces "NormalizationMode.QUANTILES" which won't match .value comparisons
+        self._action_norm_mode = norm_mode.value if isinstance(norm_mode, NormalizationMode) else str(norm_mode)
+
+        if dataset_stats and ACTION in dataset_stats:
+            action_stats = dataset_stats[ACTION]
+            # persistent=False: these are training-only stats from the current dataset,
+            # not part of the model weights. During inference the preprocessor handles
+            # normalization instead, so we don't need to save/load these.
+            if norm_mode == NormalizationMode.QUANTILES:
+                self.register_buffer("_action_q01",
+                    torch.as_tensor(action_stats["q01"], dtype=torch.float32), persistent=False)
+                self.register_buffer("_action_q99",
+                    torch.as_tensor(action_stats["q99"], dtype=torch.float32), persistent=False)
+            elif norm_mode == NormalizationMode.MIN_MAX:
+                self.register_buffer("_action_min",
+                    torch.as_tensor(action_stats["min"], dtype=torch.float32), persistent=False)
+                self.register_buffer("_action_max",
+                    torch.as_tensor(action_stats["max"], dtype=torch.float32), persistent=False)
+            elif norm_mode == NormalizationMode.MEAN_STD:
+                self.register_buffer("_action_mean",
+                    torch.as_tensor(action_stats["mean"], dtype=torch.float32), persistent=False)
+                self.register_buffer("_action_std",
+                    torch.as_tensor(action_stats["std"], dtype=torch.float32), persistent=False)
+
+    def normalize_action(self, action: Tensor) -> Tensor:
+        """Normalize action tensor using dataset statistics (same as preprocessor)."""
+        from lerobot.configs.types import NormalizationMode
+
+        if self._action_norm_mode == NormalizationMode.QUANTILES.value and hasattr(self, "_action_q01"):
+            q01 = self._action_q01.to(device=action.device, dtype=action.dtype)
+            q99 = self._action_q99.to(device=action.device, dtype=action.dtype)
+            denom = q99 - q01
+            denom = torch.where(denom.abs() < 1e-8, torch.ones_like(denom), denom)
+            normalized = 2.0 * (action - q01) / denom - 1.0
+            if not hasattr(self, "_norm_logged"):
+                # logging.info(f"[PI05] normalize_action ACTIVE: mode={self._action_norm_mode}, "
+                #              f"action range=[{action.min().item():.4f}, {action.max().item():.4f}] -> "
+                #              f"normalized range=[{normalized.min().item():.4f}, {normalized.max().item():.4f}]")
+                self._norm_logged = True
+            return normalized
+        elif self._action_norm_mode == NormalizationMode.MIN_MAX.value and hasattr(self, "_action_min"):
+            min_val = self._action_min.to(device=action.device, dtype=action.dtype)
+            max_val = self._action_max.to(device=action.device, dtype=action.dtype)
+            denom = max_val - min_val
+            denom = torch.where(denom.abs() < 1e-8, torch.ones_like(denom), denom)
+            return 2.0 * (action - min_val) / denom - 1.0
+        elif self._action_norm_mode == NormalizationMode.MEAN_STD.value and hasattr(self, "_action_mean"):
+            mean = self._action_mean.to(device=action.device, dtype=action.dtype)
+            std = self._action_std.to(device=action.device, dtype=action.dtype)
+            return (action - mean) / (std + 1e-8)
+        if not hasattr(self, "_norm_logged"):
+            logging.warning(f"[PI05] normalize_action SKIPPED: mode={self._action_norm_mode}, "
+                            f"has_q01={hasattr(self, '_action_q01')}, has_min={hasattr(self, '_action_min')}, "
+                            f"has_mean={hasattr(self, '_action_mean')}")
+            self._norm_logged = True
+        return action
+
+    def _setup_state_normalizer(self, config, dataset_stats):
+        """Store state normalization stats as buffers for training (same as action normalizer)."""
+        from lerobot.configs.types import NormalizationMode
+
+        norm_mode = config.normalization_mapping.get("STATE", NormalizationMode.IDENTITY)
+        self._state_norm_mode = norm_mode.value if isinstance(norm_mode, NormalizationMode) else str(norm_mode)
+
+        if dataset_stats and OBS_STATE in dataset_stats:
+            state_stats = dataset_stats[OBS_STATE]
+            if norm_mode == NormalizationMode.QUANTILES:
+                self.register_buffer("_state_q01",
+                    torch.as_tensor(state_stats["q01"], dtype=torch.float32), persistent=False)
+                self.register_buffer("_state_q99",
+                    torch.as_tensor(state_stats["q99"], dtype=torch.float32), persistent=False)
+            elif norm_mode == NormalizationMode.MIN_MAX:
+                self.register_buffer("_state_min",
+                    torch.as_tensor(state_stats["min"], dtype=torch.float32), persistent=False)
+                self.register_buffer("_state_max",
+                    torch.as_tensor(state_stats["max"], dtype=torch.float32), persistent=False)
+
+    def normalize_state(self, state: Tensor) -> Tensor:
+        """Normalize state tensor using dataset statistics."""
+        from lerobot.configs.types import NormalizationMode
+
+        if self._state_norm_mode == NormalizationMode.QUANTILES.value and hasattr(self, "_state_q01"):
+            q01 = self._state_q01.to(device=state.device, dtype=state.dtype)
+            q99 = self._state_q99.to(device=state.device, dtype=state.dtype)
+            denom = q99 - q01
+            denom = torch.where(denom.abs() < 1e-8, torch.ones_like(denom), denom)
+            return 2.0 * (state - q01) / denom - 1.0
+        elif self._state_norm_mode == NormalizationMode.MIN_MAX.value and hasattr(self, "_state_min"):
+            min_val = self._state_min.to(device=state.device, dtype=state.dtype)
+            max_val = self._state_max.to(device=state.device, dtype=state.dtype)
+            denom = max_val - min_val
+            denom = torch.where(denom.abs() < 1e-8, torch.ones_like(denom), denom)
+            return 2.0 * (state - min_val) / denom - 1.0
+        return state
+
+    def _setup_training_tokenizer(self):
+        """Load PaliGemma tokenizer for training-time language tokenization."""
+        try:
+            from transformers import AutoTokenizer
+            self._training_tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
+        except Exception:
+            self._training_tokenizer = None
+
+    def _tokenize_for_training(self, batch: dict[str, Tensor]) -> tuple[Tensor, Tensor]:
+        """Tokenize task + discretized state into language tokens during training.
+
+        Replicates what Pi05PrepareStateTokenizerProcessorStep + TokenizerProcessorStep
+        do in the inference preprocessor.
+        """
+        import numpy as np
+
+        state = batch[OBS_STATE]  # (B, state_dim)
+        tasks = batch["task"]     # list of strings
+
+        # Normalize state
+        state = self.normalize_state(state)
+
+        # Pad state to max_state_dim
+        state = pad_vector(state, self.config.max_state_dim)
+
+        # Discretize into 256 bins (same as Pi05PrepareStateTokenizerProcessorStep)
+        state_np = state.detach().cpu().numpy()
+        discretized_states = np.digitize(state_np, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+
+        # Build prompts
+        full_prompts = []
+        for i, task in enumerate(tasks):
+            cleaned_text = task.strip().replace("_", " ").replace("\n", " ")
+            state_str = " ".join(map(str, discretized_states[i]))
+            full_prompt = f"Task: {cleaned_text}, State: {state_str};\nAction: "
+            full_prompts.append(full_prompt)
+
+        # Tokenize with PaliGemma tokenizer
+        tokenized = self._training_tokenizer(
+            full_prompts,
+            max_length=self.config.tokenizer_max_length,
+            truncation=True,
+            padding="max_length",
+            padding_side="right",
+            return_tensors="pt",
+        )
+
+        device = state.device
+        tokens = tokenized["input_ids"].to(device)
+        masks = tokenized["attention_mask"].to(device, dtype=torch.long)
+
+        return tokens, masks
+
     def reset(self):
         """Reset internal state - called when environment resets."""
         self._action_queue = deque(maxlen=self.config.n_action_steps)
@@ -1407,18 +1575,31 @@ class PI05Policy(PreTrainedPolicy):
         # Prepare inputs
         images, img_masks = self._preprocess_images(batch)
         
-        # Handle optional language tokens (use empty tokens if not present)
+        # Handle language tokens: tokenize task+state if not pre-tokenized
         if f"{OBS_LANGUAGE_TOKENS}" in batch:
             tokens = batch[f"{OBS_LANGUAGE_TOKENS}"]
             masks = batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
+        elif self._training_tokenizer is not None and "task" in batch and OBS_STATE in batch:
+            # Training path: tokenize task text + discretized state (replicates preprocessor)
+            tokens, masks = self._tokenize_for_training(batch)
+            if not hasattr(self, "_token_warning_logged"):
+                logging.info(f"[PI05] forward(): Tokenized task+state for training. "
+                             f"tokens shape={tokens.shape}, prompt sample: see tokenizer")
+                self._token_warning_logged = True
         else:
-            # Create empty language tokens for vision-only tasks
-            batch_size = images[0].shape[0]  # images is a list of tensors
+            # Fallback: empty tokens for vision-only tasks
+            batch_size = images[0].shape[0]
             device = images[0].device
             tokens = torch.zeros((batch_size, 1), dtype=torch.long, device=device)
             masks = torch.zeros((batch_size, 1), dtype=torch.long, device=device)
+            if not hasattr(self, "_token_warning_logged"):
+                # logging.warning(f"[PI05] forward(): NO language tokens and no tokenizer! Using empty tokens. "
+                #                 f"Batch keys: {list(batch.keys())}")
+                self._token_warning_logged = True
 
-        actions = self.prepare_action(batch)
+        # Normalize raw actions (14-dim) BEFORE padding to max_action_dim (32-dim)
+        actions = self.normalize_action(batch[ACTION])
+        actions = pad_vector(actions, self.config.max_action_dim)
 
         # Compute loss (no separate state needed for PI05)
         losses = self.model.forward(images, img_masks, tokens, masks, actions)

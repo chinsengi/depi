@@ -2,7 +2,10 @@
 
 n_gpus=1
 
-export PRETRAINED_MODEL_PATH="lerobot/pi05_base"
+# Use local HF cache only (repos removed from Hub)
+# export HF_HUB_OFFLINE=1
+
+export PRETRAINED_MODEL_PATH="thomas0829/pi05-pytorch-base"
 
 RENAME_MAP='{"observation.images.front_camera":"observation.images.top","observation.images.left_camera":"observation.images.left","observation.images.right_camera":"observation.images.right"}'
 
