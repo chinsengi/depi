@@ -247,6 +247,14 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
     def _save_pretrained(self, save_directory: Path) -> None:
         self.config._save_pretrained(save_directory)
         model_to_save = self.module if hasattr(self, "module") else self
+        # Unwrap torch.compile wrapper to avoid _orig_mod prefix in state_dict keys.
+        # torch.compile can be applied at any level (policy or inner model),
+        # so we check submodules recursively for _orig_mod and unwrap them.
+        for name, child in list(model_to_save.named_children()):
+            if hasattr(child, "_orig_mod"):
+                setattr(model_to_save, name, child._orig_mod)
+        if hasattr(model_to_save, "_orig_mod"):
+            model_to_save = model_to_save._orig_mod
         save_model_as_safetensor(model_to_save, str(save_directory / SAFETENSORS_SINGLE_FILE))
 
     @classmethod

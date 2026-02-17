@@ -14,8 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from huggingface_hub.constants import CONFIG_NAME
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
@@ -68,14 +72,14 @@ class PI05Config(PreTrainedConfig):
         }
     )
 
-    # Training settings
+    # Training settings (excluded from saved config for inference compatibility)
     gradient_checkpointing: bool = False  # Enable gradient checkpointing for memory optimization
     compile_model: bool = False  # Whether to use torch.compile for model optimization
     compile_mode: str = "max-autotune"  # Torch compile mode
     device: str | None = None  # Device to use for the model (None = auto-detect)
     attention_implementation: str = "eager"  # Attention implementation: eager, sdpa, flash_attention_2
 
-    # LoRA settings
+    # LoRA settings (excluded from saved config for inference compatibility)
     use_lora: bool = False  # Enable LoRA (Low-Rank Adaptation) for efficient fine-tuning
     lora_rank: int = 16  # Rank of LoRA matrices (r in the paper)
     lora_alpha: float = 32.0  # LoRA scaling factor (usually 2x rank)
@@ -96,7 +100,34 @@ class PI05Config(PreTrainedConfig):
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
 
+    # Fields that are training-only and should not be saved in the model config
+    # (they cause errors when loading in inference-only codebases)
+    _TRAINING_ONLY_FIELDS: ClassVar[tuple] = (
+        "compiled", "attention_implementation", "compile_model", "compile_mode",
+        "gradient_checkpointing",
+        "use_lora", "lora_rank", "lora_alpha", "lora_dropout", "lora_target_modules",
+        "optimizer_lr", "optimizer_betas", "optimizer_eps", "optimizer_weight_decay",
+        "optimizer_grad_clip_norm",
+        "scheduler_warmup_steps", "scheduler_decay_steps", "scheduler_decay_lr",
+    )
+
     tokenizer_max_length: int = 200  # see openpi `__post_init__`
+
+    def _save_pretrained(self, save_directory: Path) -> None:
+        """Save config excluding training-only fields for inference compatibility."""
+        import draccus
+
+        with open(save_directory / CONFIG_NAME, "w") as f, draccus.config_type("json"):
+            draccus.dump(self, f, indent=4)
+
+        # Re-read and strip training-only fields
+        config_path = save_directory / CONFIG_NAME
+        with open(config_path) as f:
+            config_dict = json.load(f)
+        for field_name in self._TRAINING_ONLY_FIELDS:
+            config_dict.pop(field_name, None)
+        with open(config_path, "w") as f:
+            json.dump(config_dict, f, indent=4)
 
     def __post_init__(self):
         super().__post_init__()
