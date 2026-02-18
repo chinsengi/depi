@@ -5,7 +5,7 @@ n_gpus=1
 # Use local HF cache only (repos removed from Hub)
 # export HF_HUB_OFFLINE=1
 
-export PRETRAINED_MODEL_PATH="thomas0829/pi05-pytorch-base"
+export PRETRAINED_MODEL_PATH="sengi/pi05_put_dolls_cloth_lerobot"
 
 RENAME_MAP='{"observation.images.front_camera":"observation.images.top","observation.images.left_camera":"observation.images.left","observation.images.right_camera":"observation.images.right"}'
 
@@ -16,7 +16,7 @@ accelerate launch \
     --policy.path="${PRETRAINED_MODEL_PATH}" \
     --policy.normalization_mapping='{"VISUAL":"IDENTITY","STATE":"QUANTILES","ACTION":"QUANTILES"}' \
     --rename_map="${RENAME_MAP}" \
-    --dataset.repo_id="thomas0829/put_the_dolls_on_the_cloth" \
+    --dataset.repo_id="sengi/inference_put_dolls_cloth_adv" \
     --dataset.image_transforms.enable=true \
     --batch_size=1 \
     --steps=70000 \

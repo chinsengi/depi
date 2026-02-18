@@ -1608,13 +1608,28 @@ class PI05Policy(PreTrainedPolicy):
         original_action_dim = self.config.output_features[ACTION].shape[0]
         losses = losses[:, :, :original_action_dim]
 
+        loss_dict = {}
+
+        # Apply advantage weighting if available
+        if "advantage" in batch:
+            advantages = batch["advantage"]  # shape: (batch_size, n_action_steps)
+
+            # Log raw advantage statistics before clipping
+            loss_dict["mean_advantage_raw"] = advantages.mean().item()
+            loss_dict["pos_advantage_frac"] = (advantages > 0).float().mean().item()
+
+            # Expand to match loss shape (batch_size, n_action_steps, action_dim)
+            weights = advantages[:, :, None].expand_as(losses)
+            losses = losses * weights
+
+            loss_dict["mean_weight"] = weights.mean().item()
+            loss_dict["losses_after_advantage"] = losses.clone().mean().item()
+
         loss = losses.mean()
+        loss_dict["loss"] = loss.item()
 
         # Convert loss_per_dim to separate keys for WandB compatibility
         loss_per_dim = losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist()
-        loss_dict = {
-            "loss": loss.item(),
-        }
         # Add each dimension as a separate key
         for i, dim_loss in enumerate(loss_per_dim):
             loss_dict[f"loss_dim_{i}"] = dim_loss
