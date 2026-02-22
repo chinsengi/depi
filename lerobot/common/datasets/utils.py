@@ -870,11 +870,10 @@ def validate_feature_string(name: str, value: str):
 
 
 def advantage_postprocess(item: dict) -> dict:
-    """Postprocess advantage values by clipping and rescaling.
+    """Postprocess advantage values by clipping to a bounded positive range.
 
-    This function clips advantages to [-0.5, 1.0] and rescales positive values
-    so that the maximum positive value becomes 1.0. This ensures consistent
-    advantage normalization across all datasets (v2 and v3).
+    Current training keeps only non-negative weights and caps large values
+    to avoid instability when advantage signals are exponentiated upstream.
 
     Args:
         item: A dictionary containing dataset items, potentially including an "advantage" key.
@@ -890,8 +889,7 @@ def advantage_postprocess(item: dict) -> dict:
     if not torch.is_tensor(adv):
         adv = torch.tensor(adv)
 
-    # breakpoint()
-    # Clip to [0.0, 1.0] then rescale positives so max positive becomes 1.
+    # Keep non-negative weights and cap outliers.
     adv = torch.clamp(adv, min=0.0, max=2.0)
 
     item["advantage"] = adv

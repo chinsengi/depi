@@ -86,6 +86,7 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
         root: str | Path | None = None,
         episodes: list[int] | None = None,
         image_transforms: Callable | None = None,
+        advantage_postprocess: Callable[[dict], dict] | None = None,
         delta_timestamps: dict[list[float]] | None = None,
         tolerance_s: float = 1e-4,
         revision: str | None = None,
@@ -123,6 +124,7 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
         self.streaming_from_local = root is not None
 
         self.image_transforms = image_transforms
+        self.advantage_postprocess = advantage_postprocess
         self.episodes = episodes
         self.tolerance_s = tolerance_s
         self.revision = revision if revision else CODEBASE_VERSION_V3
@@ -371,6 +373,9 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
         else:
             result["task"] = self.meta.tasks.iloc[item["task_index"]].name
 
+        if callable(self.advantage_postprocess):
+            result = self.advantage_postprocess(result)
+
         yield result
 
     def _get_query_timestamps(
@@ -435,6 +440,7 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
                 continue  # visual frames are decoded separately
 
             target_frames = []
+            target_advantages = []
             is_pad = []
 
             # Create a results dictionary to store frames in processing order, then reconstruct original order for stacking
@@ -450,16 +456,18 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
                 delta_results[delta] = (
                     current_item[key],
                     False,
+                    current_item,
                 )
 
             # Process negative deltas in order of increasing difficulty
             lookback_failed = False
 
             last_successful_frame = current_item[key]
+            last_successful_item = current_item
 
             for delta in negative_deltas:
                 if lookback_failed:
-                    delta_results[delta] = (last_successful_frame, True)
+                    delta_results[delta] = (last_successful_frame, True, last_successful_item)
                     continue
 
                 try:
@@ -469,8 +477,9 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
                         past_item = item_to_torch(past_item)
 
                         if past_item["episode_index"] == current_episode_idx:
-                            delta_results[delta] = (past_item[key], False)
+                            delta_results[delta] = (past_item[key], False, past_item)
                             last_successful_frame = past_item[key]
+                            last_successful_item = past_item
 
                         else:
                             raise LookBackError("Retrieved frame is from different episode!")
@@ -478,16 +487,17 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
                         raise LookBackError("Cannot go back further than the history buffer!")
 
                 except LookBackError:
-                    delta_results[delta] = (last_successful_frame, True)
+                    delta_results[delta] = (last_successful_frame, True, last_successful_item)
                     lookback_failed = True  # All subsequent negative deltas will also fail
 
             # Process positive deltas in order of increasing difficulty
             lookahead_failed = False
             last_successful_frame = current_item[key]
+            last_successful_item = current_item
 
             for delta in positive_deltas:
                 if lookahead_failed:
-                    delta_results[delta] = (last_successful_frame, True)
+                    delta_results[delta] = (last_successful_frame, True, last_successful_item)
                     continue
 
                 try:
@@ -496,8 +506,9 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
                         future_item = item_to_torch(future_item)
 
                         if future_item["episode_index"] == current_episode_idx:
-                            delta_results[delta] = (future_item[key], False)
+                            delta_results[delta] = (future_item[key], False, future_item)
                             last_successful_frame = future_item[key]
+                            last_successful_item = future_item
 
                         else:
                             raise LookAheadError("Retrieved frame is from different episode!")
@@ -505,21 +516,28 @@ class StreamingLeRobotDatasetV3(torch.utils.data.IterableDataset):
                         raise LookAheadError("Cannot go ahead further than the lookahead buffer!")
 
                 except LookAheadError:
-                    delta_results[delta] = (last_successful_frame, True)
+                    delta_results[delta] = (last_successful_frame, True, last_successful_item)
                     lookahead_failed = True  # All subsequent positive deltas will also fail
 
             # Reconstruct original order for stacking
             for delta in delta_indices:
-                frame, is_padded = delta_results[delta]
+                frame, is_padded, source_item = delta_results[delta]
 
                 # add batch dimension for stacking
                 target_frames.append(frame)  # frame.unsqueeze(0))
                 is_pad.append(is_padded)
+                if key == "action" and "advantage" in source_item:
+                    target_advantages.append(source_item["advantage"])
 
             # Stack frames and add to results
             if target_frames:
                 query_result[key] = torch.stack(target_frames)
                 padding[f"{key}_is_pad"] = torch.BoolTensor(is_pad)
+                if key == "action" and target_advantages:
+                    advantage = torch.stack(
+                        [adv if torch.is_tensor(adv) else torch.tensor(adv) for adv in target_advantages]
+                    )
+                    query_result["advantage"] = advantage.squeeze(-1)
 
         return query_result, padding
 

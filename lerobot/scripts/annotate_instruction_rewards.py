@@ -279,16 +279,26 @@ def compute_advantages_for_episode(
 
     voc_score = spearman_dense_correlation(prefix_rewards)
 
-    prefix_rewards = np.array(prefix_rewards)
+    prefix_rewards = np.array(prefix_rewards, dtype=np.float32)
     prefix_rewards = prefix_rewards - np.min(prefix_rewards)
-    prefix_rewards = prefix_rewards / np.max(prefix_rewards)
+    max_reward = float(np.max(prefix_rewards))
+    if max_reward > 1e-8:
+        prefix_rewards = prefix_rewards / max_reward
+    else:
+        # Flat rewards: keep neutral normalized rewards to avoid NaN.
+        prefix_rewards = np.zeros_like(prefix_rewards, dtype=np.float32)
     tau = 2.0
     sampled_advantages = []
-    for i in range(1, len(prefix_rewards)):
-        for j in range(prefix_lengths[i-1], prefix_lengths[i]):
-            sampled_advantages.append(np.exp((prefix_rewards[i] - prefix_rewards[i-1]) * tau))
-    placeholder_advantage = sampled_advantages[0]
-    sampled_advantages = [placeholder_advantage] * prefix_lengths[0] + sampled_advantages
+    if len(prefix_rewards) == 1:
+        sampled_advantages = [1.0] * total_frames
+    else:
+        for i in range(1, len(prefix_rewards)):
+            delta_reward = float(prefix_rewards[i] - prefix_rewards[i - 1])
+            weight = float(np.exp(delta_reward * tau))
+            for _ in range(prefix_lengths[i - 1], prefix_lengths[i]):
+                sampled_advantages.append(weight)
+        placeholder_advantage = sampled_advantages[0] if sampled_advantages else 1.0
+        sampled_advantages = [placeholder_advantage] * prefix_lengths[0] + sampled_advantages
 
     # Now interpolate advantages to all frames in the episode
     # Each sampled frame's advantage applies to itself and the frames until the next sample
@@ -298,7 +308,7 @@ def compute_advantages_for_episode(
     local_sampled_indices = [idx - start_idx for idx in sampled_indices]
 
     for i, local_idx in enumerate(local_sampled_indices):
-        adv = sampled_advantages[i]
+        adv = sampled_advantages[i] if i < len(sampled_advantages) else sampled_advantages[-1]
         # Determine the range this advantage applies to
         end_local_idx = local_sampled_indices[i + 1] if i < len(local_sampled_indices) - 1 else total_frames
 

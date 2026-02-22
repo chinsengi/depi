@@ -191,6 +191,7 @@ def make_dataset(
                     episodes=cfg.dataset.episodes,
                     delta_timestamps=delta_timestamps,
                     image_transforms=image_transforms,
+                    advantage_postprocess=advantage_postprocess,
                     revision=cfg.dataset.revision,
                     max_num_shards=cfg.num_workers,
                     use_annotated_tasks=cfg.dataset.use_annotated_tasks,
