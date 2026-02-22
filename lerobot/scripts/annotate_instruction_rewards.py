@@ -111,8 +111,8 @@ def parse_args():
     parser.add_argument(
         "--revision",
         type=str,
-        default=None,
-        help="Optional revision name when pushing to hub.",
+        default="main",
+        help="Revision name for loading the input dataset (default: main).",
     )
     parser.add_argument(
         "--hub_private",
