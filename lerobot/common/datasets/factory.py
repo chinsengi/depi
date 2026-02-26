@@ -90,14 +90,17 @@ def _parse_revision_to_version(revision: str | None) -> packaging.version.Versio
         return None
 
 
-def _infer_dataset_major_version(repo_id: str, cfg: TrainPipelineConfig) -> int | None:
+def _infer_dataset_major_version(
+    repo_id: str, cfg: TrainPipelineConfig, root: str | Path | None = None
+) -> int | None:
     version_from_revision = _parse_revision_to_version(cfg.dataset.revision)
     if version_from_revision is not None:
         return version_from_revision.major
 
+    effective_root = root if root is not None else cfg.dataset.root
     repo_versions = get_repo_versions(
         repo_id,
-        root=cfg.dataset.root,
+        root=effective_root,
         force_cache_sync=cfg.dataset.force_cache_sync,
     )
     if repo_versions:
@@ -107,7 +110,10 @@ def _infer_dataset_major_version(repo_id: str, cfg: TrainPipelineConfig) -> int 
 
 
 def load_delta_timestamps(
-    repo_id: str, cfg: TrainPipelineConfig, major_version: int | None = None
+    repo_id: str,
+    cfg: TrainPipelineConfig,
+    major_version: int | None = None,
+    root: str | Path | None = None,
 ) -> dict[str, list] | None:
     """Loads delta timestamps for a given dataset repository ID based on the provided configuration.
 
@@ -115,18 +121,22 @@ def load_delta_timestamps(
         repo_id (str): The repository ID of the dataset.
         cfg (TrainPipelineConfig): The configuration that contains dataset and policy settings.
         major_version (int | None): Optional pre-computed major version for the repo.
+        root (str | Path | None): Override for the dataset root directory. When provided, used
+            instead of cfg.dataset.root. Pass ``cfg.dataset.root / repo_id`` for the
+            multi-dataset case where root is a shared parent directory.
 
     Returns:
         dict[str, list] | None: A dictionary of delta timestamps or None if not applicable.
     """
+    effective_root = root if root is not None else cfg.dataset.root
     if major_version is None:
-        major_version = _infer_dataset_major_version(repo_id, cfg)
+        major_version = _infer_dataset_major_version(repo_id, cfg, root=effective_root)
     is_v3_dataset = major_version is not None and major_version >= 3
 
     if is_v3_dataset:
         ds_meta = LeRobotDatasetMetadataV3(
             repo_id,
-            root=cfg.dataset.root,
+            root=effective_root,
             revision=cfg.dataset.revision,
             force_cache_sync=cfg.dataset.force_cache_sync,
             use_annotated_tasks=cfg.dataset.use_annotated_tasks,
@@ -139,7 +149,7 @@ def load_delta_timestamps(
             )
         ds_meta = LeRobotDatasetMetadata(
             repo_id,
-            root=cfg.dataset.root,
+            root=effective_root,
             revision=cfg.dataset.revision,
             force_cache_sync=cfg.dataset.force_cache_sync,
             use_annotated_tasks=cfg.dataset.use_annotated_tasks,
@@ -228,7 +238,10 @@ def make_dataset(
         skipped_repo_ids = []
         for repo_id in tqdm(repo_ids, desc="Processing datasets metadata"):
             try:
-                delta_timestamps = load_delta_timestamps(repo_id, cfg)
+                per_dataset_root = (
+                    Path(cfg.dataset.root) / repo_id if cfg.dataset.root is not None else None
+                )
+                delta_timestamps = load_delta_timestamps(repo_id, cfg, root=per_dataset_root)
             except MissingAnnotatedTasksError as exc:
                 logging.warning(
                     "Skipping dataset %s because annotated tasks are missing: %s",

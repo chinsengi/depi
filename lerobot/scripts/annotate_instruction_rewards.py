@@ -437,7 +437,7 @@ def annotate_dataset(
     # Select appropriate modify_features based on dataset version
     modify_features = modify_features_v3 if is_v3 else modify_features_v21
 
-    target_root = (output_dir).resolve()
+    target_root = (output_dir / output_repo_id).resolve()
     source_root = Path(dataset.root).resolve()
     if target_root == source_root:
         raise ValueError(
@@ -445,13 +445,16 @@ def annotate_dataset(
             "Use a different --output_dir or --output_repo_id to avoid overwriting."
         )
 
-    if Path(output_dir).resolve().exists():
-        output_dir = Path(str(output_dir) + f"_{int(time.time())}")
+    if target_root.exists():
+        raise ValueError(
+            f"Output path {target_root} already exists. "
+            "Use a different --output_dir or --output_repo_id to avoid overwriting."
+        )
     add_features = {"advantage": (advantages_array, {"dtype": "float32", "shape": (1,), "names": None})}
     new_dataset = modify_features(
         dataset=dataset,
         add_features=add_features,
-        output_dir=output_dir,
+        output_dir=output_dir / output_repo_id,
         repo_id=output_repo_id,
     )
     # new_dataset = dataset

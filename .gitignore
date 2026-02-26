@@ -187,3 +187,4 @@ tmp_upstream/*
 AGENTS.md
 datasets*/*
 *.sh
+data_ids/*
