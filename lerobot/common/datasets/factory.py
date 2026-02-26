@@ -16,6 +16,7 @@
 import json
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from pprint import pformat
 
 import packaging.version
