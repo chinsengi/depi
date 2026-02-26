@@ -32,7 +32,10 @@ from lerobot.configs.train import TrainPipelineConfig
 def cfg_to_group(cfg: TrainPipelineConfig, return_list: bool = False) -> list[str] | str:
     """Return a group name for logging. Optionally returns group name as list."""
     # Shorten dataset name for wandb tags (max 64 chars per tag)
-    dataset_name = cfg.dataset.repo_id.split('/')[-1]  # Remove org prefix
+    if cfg.dataset.repo_id is not None:
+        dataset_name = cfg.dataset.repo_id.split('/')[-1]
+    else:
+        dataset_name = "multi"
     dataset_tag = f"dataset:{dataset_name}"
     if len(dataset_tag) > 64:
         # Truncate to fit within 64 char limit
