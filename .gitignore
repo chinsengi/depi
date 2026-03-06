@@ -188,3 +188,4 @@ AGENTS.md
 datasets*/*
 *.sh
 data_ids/*
+.claude/
